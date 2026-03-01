@@ -101,7 +101,11 @@ pub fn status() -> AuthStatus {
 	}
 
 	match load_stored_auth().and_then(valid_tokens_or_none) {
-		Ok(Some(auth)) => AuthStatus { signed_in: true, account_id: auth.account_id },
+		Ok(Some(auth)) => {
+			cache_session_tokens(&auth);
+
+			AuthStatus { signed_in: true, account_id: auth.account_id }
+		},
 		_ => AuthStatus { signed_in: false, account_id: None },
 	}
 }
@@ -163,6 +167,8 @@ pub fn access_token() -> AuthResult<(String, Option<String>)> {
 		return Ok((tokens.access_token, tokens.account_id));
 	}
 	if let Some(tokens) = load_stored_auth().and_then(valid_tokens_or_none)? {
+		cache_session_tokens(&tokens);
+
 		return Ok((tokens.access_token, tokens.account_id));
 	}
 

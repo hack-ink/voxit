@@ -1,0 +1,4 @@
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Voxit needs microphone access to transcribe your speech.</string>

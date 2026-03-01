@@ -17,10 +17,9 @@ version.workspace     = true
 all-features = true
 
 [package.metadata.bundle]
-identifier                                    = "ink.hack.voxit"
-name                                          = "Voxit"
-osx_plist_keys."LSUIElement"                  = "1"
-osx_plist_keys."NSMicrophoneUsageDescription" = "Voxit needs microphone access to transcribe your speech."
+identifier          = "ink.hack.voxit"
+name                = "Voxit"
+osx_info_plist_exts = ["apps/voxit/osx/Info.plist.ext"]
 
 [features]
 default = []
