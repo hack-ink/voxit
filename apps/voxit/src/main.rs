@@ -19,7 +19,6 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use auth::{AuthRecord, AuthStatus};
 use directories::ProjectDirs;
 use eframe::{
 	App, Frame,
@@ -41,7 +40,12 @@ use tray_icon::{
 
 use crate::prelude::Result;
 use voxit_audio::{InputDevice, Recorder};
-use voxit_core::{auth, config::Config, openai, realtime, transcript::TranscriptAssembler};
+use voxit_core::{
+	auth::{self, AuthRecord},
+	config::Config,
+	openai, realtime,
+	transcript::TranscriptAssembler,
+};
 use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 
 #[cfg(target_os = "macos")]
@@ -98,7 +102,6 @@ enum AppCommand {
 #[derive(Debug)]
 enum AuthEvent {
 	SignedIn(AuthRecord),
-	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
 	Status(String),
 	Failed(String),
@@ -314,12 +317,17 @@ impl VoxitApp {
 
 		self.auth_status_refresh_started = true;
 
-		let tx = self.auth_event_tx.clone();
+		let status = auth::status();
 
-		thread::spawn(move || {
-			let status = auth::status();
-			let _ = tx.send(AuthEvent::StatusChecked(status));
-		});
+		self.auth_busy = false;
+		self.auth_signed_in = status.signed_in;
+		self.auth_status = if status.signed_in {
+			status
+				.account_id
+				.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
+		} else {
+			"Not signed in".to_string()
+		};
 	}
 
 	fn handle_auth_events(&mut self) {
@@ -333,18 +341,6 @@ impl VoxitApp {
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
-				},
-				AuthEvent::StatusChecked(status) => {
-					self.auth_busy = false;
-					self.auth_signed_in = status.signed_in;
-					self.auth_status = if status.signed_in {
-						status.account_id.map_or_else(
-							|| "Signed in".to_string(),
-							|id| format!("Signed in: {id}"),
-						)
-					} else {
-						"Not signed in".to_string()
-					};
 				},
 				AuthEvent::DeviceCodeInfo { user_code, verification_uri } => {
 					self.device_code_user_code = Some(user_code);
