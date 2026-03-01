@@ -76,8 +76,6 @@ pub enum PermissionSettingsPane {
 	Microphone,
 	/// Accessibility privacy settings.
 	Accessibility,
-	/// Input monitoring privacy settings.
-	InputMonitoring,
 }
 impl PermissionSettingsPane {
 	/// Human-friendly label for status text.
@@ -85,7 +83,6 @@ impl PermissionSettingsPane {
 		match self {
 			Self::Microphone => "Microphone",
 			Self::Accessibility => "Accessibility",
-			Self::InputMonitoring => "Input Monitoring",
 		}
 	}
 }
@@ -112,7 +109,6 @@ pub fn permission_is_granted(pane: PermissionSettingsPane) -> bool {
 	match pane {
 		PermissionSettingsPane::Microphone => has_microphone_permission(),
 		PermissionSettingsPane::Accessibility => has_accessibility_permission(),
-		PermissionSettingsPane::InputMonitoring => has_input_monitoring_permission(),
 	}
 }
 
@@ -129,7 +125,6 @@ pub fn request_permission(pane: PermissionSettingsPane) -> bool {
 		PermissionSettingsPane::Microphone =>
 			matches!(request_microphone_permission(), MicrophonePermissionState::Granted),
 		PermissionSettingsPane::Accessibility => request_accessibility_permission(),
-		PermissionSettingsPane::InputMonitoring => request_input_monitoring_permission(),
 	}
 }
 
@@ -404,20 +399,6 @@ fn request_accessibility_permission() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn has_input_monitoring_permission() -> bool {
-	unsafe { CGPreflightListenEventAccess() != 0 }
-}
-
-#[cfg(target_os = "macos")]
-fn request_input_monitoring_permission() -> bool {
-	tracing::info!("input monitoring permission request invoked");
-
-	let requested = unsafe { CGRequestListenEventAccess() != 0 };
-
-	requested || has_input_monitoring_permission()
-}
-
-#[cfg(target_os = "macos")]
 fn accessibility_request_options() -> CfDictionaryRef {
 	let key: CfTypeRef = unsafe { kAXTrustedCheckOptionPrompt };
 	let value: CfTypeRef = unsafe { kCFBooleanTrue };
@@ -466,7 +447,5 @@ unsafe extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
 	fn AXIsProcessTrustedWithOptions(options: CfDictionaryRef) -> u8;
-	fn CGPreflightListenEventAccess() -> u8;
-	fn CGRequestListenEventAccess() -> u8;
 	static kAXTrustedCheckOptionPrompt: CfTypeRef;
 }
