@@ -19,6 +19,7 @@ use std::{
 	time::Duration,
 };
 
+use auth::{AuthRecord, AuthStatus};
 use directories::ProjectDirs;
 use eframe::{
 	App, Frame,
@@ -26,10 +27,9 @@ use eframe::{
 };
 #[cfg(target_os = "macos")] use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 #[cfg(target_os = "macos")] use global_hotkey::GlobalHotKeyManager;
+use realtime::{RealtimeEvent, RealtimeSession};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
-use voxit_audio as audio;
-use voxit_macos as macos;
 #[cfg(target_os = "macos")]
 use tray_icon::{
 	TrayIcon, TrayIconBuilder,
@@ -38,10 +38,8 @@ use tray_icon::{
 		accelerator::{Accelerator, Code, Modifiers},
 	},
 };
-use audio::{InputDevice, Recorder};
-use auth::{AuthRecord, AuthStatus};
-use macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
-use realtime::{RealtimeEvent, RealtimeSession};
+use voxit_audio::{InputDevice, Recorder};
+use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 
 use crate::prelude::Result;
 use voxit_core::{auth, config::Config, openai, realtime, transcript::TranscriptAssembler};
@@ -115,6 +113,7 @@ struct VoxitApp {
 	auth_status_refresh_started: bool,
 	status: String,
 	auth_status: String,
+	auth_signed_in: bool,
 	auth_busy: bool,
 	hotkey_mode: HotkeyMode,
 	hotkey_mode_u8: Arc<AtomicU8>,
@@ -182,6 +181,7 @@ impl VoxitApp {
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
 			auth_status: "Checking auth...".to_string(),
+			auth_signed_in: false,
 			auth_busy: false,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
@@ -325,12 +325,14 @@ impl VoxitApp {
 					self.device_code_user_code = None;
 					self.device_code_verification_uri = None;
 					self.auth_busy = false;
+					self.auth_signed_in = true;
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
 				},
 				AuthEvent::StatusChecked(status) => {
 					self.auth_busy = false;
+					self.auth_signed_in = status.signed_in;
 					self.auth_status = if status.signed_in {
 						status.account_id.map_or_else(
 							|| "Signed in".to_string(),
@@ -363,7 +365,8 @@ impl VoxitApp {
 
 	fn refresh_permission_checks(&mut self) {
 		self.microphone_permission_state = voxit_macos::microphone_permission_state();
-		self.microphone_checked = voxit_macos::permission_is_granted(PermissionSettingsPane::Microphone);
+		self.microphone_checked =
+			voxit_macos::permission_is_granted(PermissionSettingsPane::Microphone);
 		self.accessibility_checked =
 			voxit_macos::permission_is_granted(PermissionSettingsPane::Accessibility);
 		self.input_monitoring_checked =
@@ -473,7 +476,11 @@ impl VoxitApp {
 		self.device_code_user_code = None;
 		self.device_code_verification_uri = None;
 		self.auth_status = match auth::sign_out() {
-			Ok(()) => "Not signed in".to_string(),
+			Ok(()) => {
+				self.auth_signed_in = false;
+
+				"Not signed in".to_string()
+			},
 			Err(err) => {
 				self.status = format!("Sign out failed: {err}");
 
@@ -948,16 +955,20 @@ impl VoxitApp {
 				ui.label("Authenticating...");
 			}
 		});
-
 		ui.horizontal_wrapped(|ui| {
-			if ui.button("Sign in with ChatGPT").clicked() {
-				self.start_sign_in_with_chatgpt();
-			}
-			if ui.button("Device code login").clicked() {
-				self.start_sign_in_with_device_code();
-			}
-			if ui.button("Sign out").clicked() {
-				self.sign_out();
+			let can_auth = !self.auth_busy;
+
+			if self.auth_signed_in {
+				if ui.add_enabled(can_auth, egui::Button::new("Sign out")).clicked() {
+					self.sign_out();
+				}
+			} else {
+				if ui.add_enabled(can_auth, egui::Button::new("Sign in with ChatGPT")).clicked() {
+					self.start_sign_in_with_chatgpt();
+				}
+				if ui.add_enabled(can_auth, egui::Button::new("Device code login")).clicked() {
+					self.start_sign_in_with_device_code();
+				}
 			}
 		});
 	}
@@ -1212,6 +1223,7 @@ impl VoxitApp {
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
 			auth_status: "Checking auth...".to_string(),
+			auth_signed_in: false,
 			auth_busy: false,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
