@@ -16,7 +16,7 @@ use std::{
 		mpsc::{self, Receiver, Sender},
 	},
 	thread,
-	time::Duration,
+	time::{Duration, Instant},
 };
 
 use auth::{AuthRecord, AuthStatus};
@@ -48,6 +48,15 @@ use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 const TRAY_MENU_ITEM_SHOW: &str = "show_window";
 #[cfg(target_os = "macos")]
 const TRAY_MENU_ITEM_QUIT: &str = "quit_voxit";
+const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const PERMISSION_POLL_TIMEOUT: Duration = Duration::from_secs(7);
+
+#[derive(Clone, Copy, Debug)]
+struct PermissionPoll {
+	target: PermissionSettingsPane,
+	next_check_at: Instant,
+	deadline: Instant,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HotkeyMode {
@@ -126,7 +135,7 @@ struct VoxitApp {
 	microphone_permission_state: MicrophonePermissionState,
 	microphone_checked: bool,
 	accessibility_checked: bool,
-	input_monitoring_checked: bool,
+	permission_poll: Option<PermissionPoll>,
 	audio_input_devices: Vec<InputDevice>,
 	device_code_user_code: Option<String>,
 	device_code_verification_uri: Option<String>,
@@ -191,9 +200,7 @@ impl VoxitApp {
 			accessibility_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::Accessibility,
 			),
-			input_monitoring_checked: voxit_macos::permission_is_granted(
-				PermissionSettingsPane::InputMonitoring,
-			),
+			permission_poll: None,
 			audio_input_devices: Vec::new(),
 			device_code_user_code: None,
 			device_code_verification_uri: None,
@@ -363,8 +370,82 @@ impl VoxitApp {
 			voxit_macos::permission_is_granted(PermissionSettingsPane::Microphone);
 		self.accessibility_checked =
 			voxit_macos::permission_is_granted(PermissionSettingsPane::Accessibility);
-		self.input_monitoring_checked =
-			voxit_macos::permission_is_granted(PermissionSettingsPane::InputMonitoring);
+	}
+
+	fn should_poll_permission(&self, target: PermissionSettingsPane) -> bool {
+		match target {
+			PermissionSettingsPane::Microphone => !matches!(
+				self.microphone_permission_state,
+				MicrophonePermissionState::Granted
+					| MicrophonePermissionState::Denied
+					| MicrophonePermissionState::Restricted
+			),
+			PermissionSettingsPane::Accessibility => !self.accessibility_checked,
+		}
+	}
+
+	fn start_permission_poll_if_needed(&mut self, target: PermissionSettingsPane) {
+		if self.should_poll_permission(target) {
+			let now = Instant::now();
+
+			self.permission_poll = Some(PermissionPoll {
+				target,
+				next_check_at: now,
+				deadline: now + PERMISSION_POLL_TIMEOUT,
+			});
+		} else {
+			self.permission_poll = None;
+		}
+	}
+
+	fn stop_permission_poll(&mut self) {
+		self.permission_poll = None;
+	}
+
+	fn is_permission_polling_done(&self, target: PermissionSettingsPane) -> bool {
+		match target {
+			PermissionSettingsPane::Microphone => {
+				matches!(
+					self.microphone_permission_state,
+					MicrophonePermissionState::Granted
+						| MicrophonePermissionState::Denied
+						| MicrophonePermissionState::Restricted
+				)
+			},
+			PermissionSettingsPane::Accessibility => self.accessibility_checked,
+		}
+	}
+
+	fn handle_permission_poll(&mut self, ctx: &Context) {
+		let Some(poll) = self.permission_poll else {
+			return;
+		};
+		let now = Instant::now();
+
+		if now >= poll.deadline {
+			self.stop_permission_poll();
+
+			return;
+		}
+		if now < poll.next_check_at {
+			ctx.request_repaint_after(poll.next_check_at - now);
+
+			return;
+		}
+
+		self.refresh_permission_checks();
+
+		if self.is_permission_polling_done(poll.target) {
+			self.stop_permission_poll();
+		} else {
+			self.permission_poll = Some(PermissionPoll {
+				target: poll.target,
+				next_check_at: now + PERMISSION_POLL_INTERVAL,
+				deadline: poll.deadline,
+			});
+
+			ctx.request_repaint_after(PERMISSION_POLL_INTERVAL);
+		}
 	}
 
 	fn microphone_status_text(&self) -> &'static str {
@@ -806,7 +887,6 @@ impl VoxitApp {
 			?pane,
 			microphone_checked = self.microphone_checked,
 			accessibility_checked = self.accessibility_checked,
-			input_monitoring_checked = self.input_monitoring_checked,
 			"requesting macOS permission"
 		);
 
@@ -841,6 +921,8 @@ impl VoxitApp {
 					MicrophonePermissionState::Unknown =>
 						format!("{pane_name} permission status is unknown."),
 				};
+
+				self.start_permission_poll_if_needed(PermissionSettingsPane::Microphone);
 			},
 			PermissionSettingsPane::Accessibility => {
 				let granted = if self.accessibility_checked {
@@ -858,23 +940,8 @@ impl VoxitApp {
 				} else {
 					format!("{pane_name} permission not granted. Enable it in System Settings.")
 				};
-			},
-			PermissionSettingsPane::InputMonitoring => {
-				let granted = if self.input_monitoring_checked {
-					true
-				} else {
-					voxit_macos::request_permission(PermissionSettingsPane::InputMonitoring)
-				};
 
-				self.input_monitoring_checked = granted;
-
-				self.refresh_permission_checks();
-
-				self.status = if granted {
-					format!("{pane_name} permission granted.")
-				} else {
-					format!("{pane_name} permission not granted. Enable it in System Settings.")
-				};
+				self.start_permission_poll_if_needed(PermissionSettingsPane::Accessibility);
 			},
 		}
 	}
@@ -950,17 +1017,6 @@ impl VoxitApp {
 
 		if !self.accessibility_checked && ui.button("Request Accessibility permission").clicked() {
 			self.request_permission(PermissionSettingsPane::Accessibility);
-		}
-
-		ui.label(format!(
-			"Input Monitoring (global hotkey): {}",
-			if self.input_monitoring_checked { "granted" } else { "missing" }
-		));
-
-		if !self.input_monitoring_checked
-			&& ui.button("Request Input Monitoring permission").clicked()
-		{
-			self.request_permission(PermissionSettingsPane::InputMonitoring);
 		}
 	}
 
@@ -1163,9 +1219,7 @@ impl VoxitApp {
 			accessibility_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::Accessibility,
 			),
-			input_monitoring_checked: voxit_macos::permission_is_granted(
-				PermissionSettingsPane::InputMonitoring,
-			),
+			permission_poll: None,
 			audio_input_devices: Vec::new(),
 			device_code_user_code: None,
 			device_code_verification_uri: None,
@@ -1188,6 +1242,7 @@ impl VoxitApp {
 impl App for VoxitApp {
 	fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
 		self.handle_commands(ctx);
+		self.handle_permission_poll(ctx);
 		#[cfg(target_os = "macos")]
 		self.hotkey_mode_u8.store(self.hotkey_mode.as_u8(), Ordering::Release);
 
@@ -1385,7 +1440,8 @@ fn run_ui() -> Result<()> {
 
 	if app._hotkey_manager.is_none() {
 		app.status =
-			"Global hotkey unavailable. Grant Input Monitoring and restart Voxit.".to_string();
+			"Global hotkey unavailable. Ensure Accessibility is granted, then restart Voxit."
+				.to_string();
 	}
 
 	let options = eframe::NativeOptions {
