@@ -5,7 +5,7 @@ use std::{
 	fs::{self, File, OpenOptions},
 	io::{self, Read as _, Write as _},
 	path::{Path, PathBuf},
-	sync::{OnceLock, RwLock},
+	sync::{Condvar, Mutex, OnceLock, RwLock},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -39,6 +39,7 @@ const KEYRING_VERIFY_DELAY_MS: u64 = 120;
 const TEST_FORCE_KEYRING_ERROR_ENV: &str = "VOXIT_TEST_FORCE_KEYRING_ERROR";
 
 static SESSION_TOKEN_CACHE: OnceLock<RwLock<Option<TokenData>>> = OnceLock::new();
+static STORED_AUTH_CACHE: OnceLock<(Mutex<StoredAuthCacheState>, Condvar)> = OnceLock::new();
 
 /// Authentication result returned to the UI after sign-in.
 #[derive(Clone, Debug)]
@@ -54,6 +55,12 @@ pub struct AuthStatus {
 	pub signed_in: bool,
 	/// Optional ChatGPT account id claim from stored token claims.
 	pub account_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StoredAuthCacheState {
+	loading: bool,
+	result: Option<Option<TokenData>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -100,7 +107,7 @@ pub fn status() -> AuthStatus {
 		return AuthStatus { signed_in: true, account_id: tokens.account_id };
 	}
 
-	match load_stored_auth().and_then(valid_tokens_or_none) {
+	match load_stored_auth_tokens() {
 		Ok(Some(auth)) => {
 			cache_session_tokens(&auth);
 
@@ -113,6 +120,7 @@ pub fn status() -> AuthStatus {
 /// Remove stored auth tokens (keyring and fallback file).
 pub fn sign_out() -> AuthResult<()> {
 	clear_cached_session_tokens();
+	clear_stored_auth_cache();
 
 	let base = app_config_dir()?;
 
@@ -166,7 +174,7 @@ pub fn access_token() -> AuthResult<(String, Option<String>)> {
 	if let Some(tokens) = load_cached_tokens() {
 		return Ok((tokens.access_token, tokens.account_id));
 	}
-	if let Some(tokens) = load_stored_auth().and_then(valid_tokens_or_none)? {
+	if let Some(tokens) = load_stored_auth_tokens()? {
 		cache_session_tokens(&tokens);
 
 		return Ok((tokens.access_token, tokens.account_id));
@@ -371,7 +379,7 @@ fn store_tokens(tokens: &TokenData) -> AuthResult<()> {
 		},
 		Err(err) =>
 			if auth_file_fallback_enabled() {
-				tracing::warn!("auth keyring save failed, falling back to auth.json: {err}");
+				tracing::warn!(error = %err, "auth keyring save failed, falling back to auth.json");
 
 				save_to_file(&base, &serialized)?;
 
@@ -384,6 +392,7 @@ fn store_tokens(tokens: &TokenData) -> AuthResult<()> {
 	};
 
 	cache_session_tokens(tokens);
+	cache_stored_auth_tokens(Some(tokens.clone()));
 
 	if keyring_saved {
 		let _ = clear_auth_file(&base);
@@ -448,6 +457,91 @@ fn env_flag_enabled(name: &str) -> bool {
 	}
 }
 
+fn stored_auth_cache() -> &'static (Mutex<StoredAuthCacheState>, Condvar) {
+	STORED_AUTH_CACHE.get_or_init(|| (Mutex::new(StoredAuthCacheState::default()), Condvar::new()))
+}
+
+fn load_stored_auth_tokens() -> AuthResult<Option<TokenData>> {
+	let (cache_lock, cache_cv) = stored_auth_cache();
+	let mut state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
+
+	loop {
+		if let Some(cached) = state.result.clone() {
+			match cached {
+				Some(tokens) => {
+					if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
+						clear_cached_session_tokens();
+
+						state.result = None;
+
+						tracing::debug!("stored auth cache expired, refreshing");
+
+						continue;
+					}
+
+					tracing::debug!("stored auth cache hit");
+
+					return Ok(Some(tokens));
+				},
+				None => {
+					tracing::debug!("stored auth cache hit (no tokens)");
+
+					return Ok(None);
+				},
+			}
+		}
+
+		if state.loading {
+			tracing::debug!("waiting for in-flight stored-auth load");
+
+			state = cache_cv.wait(state).unwrap_or_else(|err| err.into_inner());
+
+			continue;
+		}
+
+		state.loading = true;
+
+		drop(state);
+
+		tracing::debug!("stored auth cache miss, reading keyring/fallback");
+
+		let loaded = load_stored_auth().and_then(valid_tokens_or_none);
+
+		state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
+		state.loading = false;
+
+		if let Ok(ref tokens) = loaded {
+			state.result = Some(tokens.clone());
+		} else {
+			state.result = None;
+		}
+
+		cache_cv.notify_all();
+
+		if let Err(err) = &loaded {
+			tracing::warn!(error = %err, "stored auth read failed");
+		}
+
+		return loaded;
+	}
+}
+
+fn cache_stored_auth_tokens(tokens: Option<TokenData>) {
+	let (cache_lock, _) = stored_auth_cache();
+	let mut state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
+
+	state.result = Some(tokens);
+}
+
+fn clear_stored_auth_cache() {
+	let (cache_lock, cache_cv) = stored_auth_cache();
+	let mut state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
+
+	*state = StoredAuthCacheState::default();
+
+	cache_cv.notify_all();
+}
+
 fn session_token_cache() -> &'static RwLock<Option<TokenData>> {
 	SESSION_TOKEN_CACHE.get_or_init(|| RwLock::new(None))
 }
@@ -466,6 +560,7 @@ fn clear_cached_session_tokens() {
 
 fn save_to_keyring(base: &Path, payload: &str) -> io::Result<()> {
 	let key = auth_key(base).map_err(io::Error::other)?;
+
 	#[cfg(test)]
 	if env_flag_enabled(TEST_FORCE_KEYRING_ERROR_ENV) {
 		return Err(io::Error::other("forced test keyring error"));
@@ -529,6 +624,7 @@ fn save_to_file(base: &Path, payload: &str) -> AuthResult<()> {
 	let mut builder = OpenOptions::new();
 
 	builder.create(true).truncate(true).write(true);
+
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::OpenOptionsExt;
@@ -1018,9 +1114,10 @@ mod tests {
 		AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, DEFAULT_ISSUER, DEFAULT_PORT,
 		HashMap, KEYRING_VERIFY_ENABLED_ENV, REDIRECT_URI_PATH, StoredAuth,
 		TEST_FORCE_KEYRING_ERROR_ENV, TokenData, Url, access_token, app_config_dir,
-		browser_redirect_uri, build_authorize_url, cache_session_tokens,
-		clear_cached_session_tokens, load_from_file, now_unix, save_to_file,
-		should_verify_keyring_storage, status, store_tokens,
+		browser_redirect_uri, build_authorize_url, cache_session_tokens, cache_stored_auth_tokens,
+		clear_cached_session_tokens, clear_stored_auth_cache, load_from_file,
+		load_stored_auth_tokens, now_unix, save_to_file, should_verify_keyring_storage, status,
+		store_tokens,
 	};
 	use std::{fs, sync::Mutex};
 
@@ -1108,6 +1205,38 @@ mod tests {
 		assert_eq!(token.1, Some("account-1".to_string()));
 
 		clear_cached_session_tokens();
+	}
+
+	#[test]
+	fn stored_auth_cache_reuses_tokens_until_invalidation() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+
+		clear_cached_session_tokens();
+		clear_stored_auth_cache();
+		cache_stored_auth_tokens(Some(TokenData {
+			id_token: "cache-id".to_string(),
+			access_token: "cache-access".to_string(),
+			refresh_token: Some("cache-refresh".to_string()),
+			account_id: Some("cache-account".to_string()),
+			created_at_unix: now_unix(),
+			expires_in_seconds: Some(3_600),
+		}));
+
+		let first = load_stored_auth_tokens().expect("read cache").expect("tokens");
+
+		assert_eq!(first.access_token, "cache-access");
+
+		let second = load_stored_auth_tokens().expect("read cache again").expect("tokens");
+
+		assert_eq!(second.access_token, "cache-access");
+
+		cache_stored_auth_tokens(None);
+
+		let cleared = load_stored_auth_tokens().expect("read cleared cache");
+
+		assert!(cleared.is_none());
+
+		clear_stored_auth_cache();
 	}
 
 	#[test]

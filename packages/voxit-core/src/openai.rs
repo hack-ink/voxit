@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")] use std::collections::BTreeMap;
 #[cfg(target_os = "macos")] use std::time::{Duration, Instant};
 
+use reqwest::blocking::Response;
 #[cfg(target_os = "macos")] use reqwest::blocking::{Client, multipart};
 #[cfg(target_os = "macos")] use serde_json::Value;
 
@@ -54,6 +55,7 @@ pub enum InferenceEvent {
 pub fn transcribe_only(wav: &[u8], model: &str) -> Result<(String, u64), String> {
 	let started = Instant::now();
 	let raw = transcribe(wav, model)?;
+
 	Ok((raw, started.elapsed().as_millis() as u64))
 }
 
@@ -76,8 +78,10 @@ pub fn rewrite_only(text: &str, model: &str) -> Result<(RewriteResult, u64), Str
 			0,
 		));
 	}
+
 	let started = Instant::now();
 	let result = rewrite_with_guard(text, model)?;
+
 	Ok((result, started.elapsed().as_millis() as u64))
 }
 
@@ -106,7 +110,6 @@ fn rewrite(text: &str, model: &str) -> Result<String, String> {
 		"instructions": prompt,
 		"temperature": 0.2,
 	});
-
 	let body = post_json("https://api.openai.com/v1/responses", body)?;
 
 	extract_json_value(&body, &["/output_text", "/output/0/content/0/text"])
@@ -146,22 +149,21 @@ fn post_multipart(
 	model: &str,
 ) -> Result<String, String> {
 	let (api_key, account_id) = auth_token()?;
-
 	let client = Client::builder()
 		.timeout(Duration::from_secs(120))
 		.build()
 		.map_err(|err| format!("failed to build OpenAI HTTP client: {err}"))?;
-
 	let file_part = multipart::Part::bytes(file_bytes.to_vec())
 		.file_name(file_name.to_string())
 		.mime_str("audio/wav")
 		.map_err(|err| format!("invalid file mime: {err}"))?;
-
 	let form = multipart::Form::new().text("model", model.to_string()).part("file", file_part);
 	let mut request = client.post(url).bearer_auth(api_key).multipart(form);
+
 	if let Some(account_id) = account_id {
 		request = request.header("ChatGPT-Account-ID", account_id);
 	}
+
 	let response = request.send().map_err(|err| format!("transcription request failed: {err}"))?;
 
 	check_status(response, "transcription")
@@ -170,26 +172,27 @@ fn post_multipart(
 #[cfg(target_os = "macos")]
 fn post_json(url: &str, body: Value) -> Result<String, String> {
 	let (api_key, account_id) = auth_token()?;
-
 	let client = Client::builder()
 		.timeout(Duration::from_secs(120))
 		.build()
 		.map_err(|err| format!("failed to build OpenAI HTTP client: {err}"))?;
-
 	let mut request = client.post(url).bearer_auth(api_key).json(&body);
+
 	if let Some(account_id) = account_id {
 		request = request.header("ChatGPT-Account-ID", account_id);
 	}
+
 	let response = request.send().map_err(|err| format!("rewrite request failed: {err}"))?;
 
 	check_status(response, "rewrite")
 }
 
 #[cfg(target_os = "macos")]
-fn check_status(response: reqwest::blocking::Response, step: &str) -> Result<String, String> {
+fn check_status(response: Response, step: &str) -> Result<String, String> {
 	if !response.status().is_success() {
 		let status = response.status();
 		let body = response.text().unwrap_or_else(|_| "<failed to read response body>".to_string());
+
 		return Err(format!("{step} failed with status {status}: {body}"));
 	}
 
@@ -227,20 +230,21 @@ fn protected_token_multiset(text: &str) -> BTreeMap<String, u32> {
 
 	for token in text.split_whitespace() {
 		let token = trim_token(token);
+
 		if token.is_empty() {
 			continue;
 		}
 
 		if let Some(normalized) = normalize_currency_token(token) {
 			*items.entry(normalized).or_default() += 1;
+
 			continue;
 		}
-
 		if let Some(normalized) = normalize_date_token(token) {
 			*items.entry(normalized).or_default() += 1;
+
 			continue;
 		}
-
 		if let Some(normalized) = normalize_numeric_token(token) {
 			*items.entry(normalized).or_default() += 1;
 		}
@@ -263,18 +267,22 @@ fn trim_token(raw: &str) -> &str {
 fn normalize_currency_token(token: &str) -> Option<String> {
 	if let Some(without_symbol) = token.strip_prefix('$') {
 		let value = normalize_numeric_token(without_symbol)?;
+
 		return Some(format!("${value}"));
 	}
 	if let Some(without_symbol) = token.strip_prefix('€') {
 		let value = normalize_numeric_token(without_symbol)?;
+
 		return Some(format!("€{value}"));
 	}
 	if let Some(without_symbol) = token.strip_prefix('£') {
 		let value = normalize_numeric_token(without_symbol)?;
+
 		return Some(format!("£{value}"));
 	}
 	if let Some(without_symbol) = token.strip_prefix('¥') {
 		let value = normalize_numeric_token(without_symbol)?;
+
 		return Some(format!("¥{value}"));
 	}
 
@@ -284,11 +292,13 @@ fn normalize_currency_token(token: &str) -> Option<String> {
 #[cfg(target_os = "macos")]
 fn normalize_date_token(token: &str) -> Option<String> {
 	let parts: Vec<&str> = token.split(['/', '-']).collect();
+
 	if parts.len() != 3 {
 		return None;
 	}
 
 	let norm: Vec<_> = parts.iter().map(|part| part.trim()).collect();
+
 	if !norm.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
 		return None;
 	}
@@ -307,6 +317,7 @@ fn normalize_numeric_token(token: &str) -> Option<String> {
 	}
 
 	let trimmed = token.trim_matches(|ch: char| ch == '$' || ch == '£' || ch == '€' || ch == '¥');
+
 	if trimmed.is_empty() {
 		return None;
 	}
@@ -318,19 +329,22 @@ fn normalize_numeric_token(token: &str) -> Option<String> {
 	for ch in trimmed.chars() {
 		if ch.is_ascii_digit() {
 			digits_seen = true;
+
 			normalized.push(ch);
+
 			continue;
 		}
-
 		if ch == '.' {
 			if dot_seen {
 				return None;
 			}
+
 			dot_seen = true;
+
 			normalized.push(ch);
+
 			continue;
 		}
-
 		if ch != ',' {
 			return None;
 		}
@@ -347,7 +361,7 @@ fn auth_token() -> Result<(String, Option<String>), String> {
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests {
-	use super::{
+	use crate::openai::{
 		normalize_currency_token, normalize_date_token, normalize_numeric_token,
 		protected_token_multiset,
 	};
@@ -377,6 +391,7 @@ mod tests {
 		let raw = protected_token_multiset("call me at 120 and send 25 dollars on 2026-02-28");
 		let rewritten =
 			protected_token_multiset("call me at one twenty and send 26 dollars on 2026-02-28");
+
 		assert_ne!(raw, rewritten);
 	}
 }
