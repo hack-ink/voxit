@@ -192,7 +192,7 @@ impl VoxitApp {
 			status: "No action yet.".to_string(),
 			auth_status: "Checking auth...".to_string(),
 			auth_signed_in: false,
-			auth_busy: false,
+			auth_busy: true,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
 			transcript_assembler: TranscriptAssembler::new(),
@@ -1221,7 +1221,7 @@ impl VoxitApp {
 			status: "No action yet.".to_string(),
 			auth_status: "Checking auth...".to_string(),
 			auth_signed_in: false,
-			auth_busy: false,
+			auth_busy: true,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
 			transcript_assembler: TranscriptAssembler::new(),
@@ -1267,6 +1267,10 @@ impl App for VoxitApp {
 				self.render_output_section(ui);
 			});
 		});
+
+		if self.is_window_visible && (self.auth_busy || self.is_finalizing || self.is_rewriting) {
+			ctx.request_repaint_after(Duration::from_millis(100));
+		}
 	}
 }
 
