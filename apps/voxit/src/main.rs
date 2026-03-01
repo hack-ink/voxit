@@ -38,11 +38,11 @@ use tray_icon::{
 		accelerator::{Accelerator, Code, Modifiers},
 	},
 };
-use voxit_audio::{InputDevice, Recorder};
-use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 
 use crate::prelude::Result;
+use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{auth, config::Config, openai, realtime, transcript::TranscriptAssembler};
+use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 
 #[cfg(target_os = "macos")]
 const TRAY_MENU_ITEM_SHOW: &str = "show_window";
@@ -1122,8 +1122,9 @@ impl VoxitApp {
 				if self.accessibility_checked { "granted" } else { "missing" }
 			));
 
-			let can_request = self.permission_step_enabled(PermissionSettingsPane::Accessibility)
-				&& next_permission_step == Some(PermissionSettingsPane::Accessibility);
+			let can_request = self.accessibility_checked
+				|| (self.permission_step_enabled(PermissionSettingsPane::Accessibility)
+					&& next_permission_step == Some(PermissionSettingsPane::Accessibility));
 			let label = if self.accessibility_checked {
 				"Re-check Accessibility permission"
 			} else {
@@ -1140,8 +1141,9 @@ impl VoxitApp {
 				if self.input_monitoring_checked { "granted" } else { "missing" }
 			));
 
-			let can_request = self.permission_step_enabled(PermissionSettingsPane::InputMonitoring)
-				&& next_permission_step == Some(PermissionSettingsPane::InputMonitoring);
+			let can_request = self.input_monitoring_checked
+				|| (self.permission_step_enabled(PermissionSettingsPane::InputMonitoring)
+					&& next_permission_step == Some(PermissionSettingsPane::InputMonitoring));
 			let label = if self.input_monitoring_checked {
 				"Re-check Input Monitoring permission"
 			} else {
