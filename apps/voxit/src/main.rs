@@ -802,6 +802,14 @@ impl VoxitApp {
 	}
 
 	fn request_permission(&mut self, pane: PermissionSettingsPane) {
+		tracing::info!(
+			?pane,
+			microphone_checked = self.microphone_checked,
+			accessibility_checked = self.accessibility_checked,
+			input_monitoring_checked = self.input_monitoring_checked,
+			"requesting macOS permission"
+		);
+
 		let pane_name = pane.display_name();
 
 		match pane {
