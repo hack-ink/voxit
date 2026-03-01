@@ -3,8 +3,9 @@
 use std::{
 	collections::HashMap,
 	fs::{self, File, OpenOptions},
-	io::{self, Read, Write},
+	io::{self, Read as _, Write as _},
 	path::{Path, PathBuf},
+	sync::{OnceLock, RwLock},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -12,26 +13,32 @@ use std::{
 use base64::Engine;
 use directories::ProjectDirs;
 use keyring::Entry;
-use rand::RngExt;
-use reqwest::blocking::{Client, Response};
+use rand::RngExt as _;
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tiny_http::{Header, Request, Response as HttpResponse, Server};
+use tiny_http::{Header, Request, Server};
 use url::Url;
 
 type AuthResult<T> = std::result::Result<T, String>;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
-const DEFAULT_PORT: u16 = 1455;
+const DEFAULT_PORT: u16 = 1_455;
 const REDIRECT_URI_PATH: &str = "/auth/callback";
 const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
 const KEYRING_SERVICE: &str = "Voxit Auth";
 const KEYRING_KEY_PREFIX: &str = "cli|";
 const AUTH_FILE_NAME: &str = "auth.json";
 const AUTH_FILE_FALLBACK_ENV: &str = "VOXIT_AUTH_FILE_FALLBACK";
+const KEYRING_VERIFY_ENABLED_ENV: &str = "VOXIT_VERIFY_KEYRING";
 const KEYRING_VERIFY_ATTEMPTS: usize = 5;
 const KEYRING_VERIFY_DELAY_MS: u64 = 120;
+#[cfg(test)]
+const TEST_FORCE_KEYRING_ERROR_ENV: &str = "VOXIT_TEST_FORCE_KEYRING_ERROR";
+
+static SESSION_TOKEN_CACHE: OnceLock<RwLock<Option<TokenData>>> = OnceLock::new();
 
 /// Authentication result returned to the UI after sign-in.
 #[derive(Clone, Debug)]
@@ -61,11 +68,10 @@ struct TokenData {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredAuth {
-	#[serde(default)]
 	auth_mode: Option<String>,
 	#[serde(rename = "OPENAI_API_KEY")]
 	openai_api_key: Option<String>,
-	#[serde(default)]
+
 	tokens: Option<TokenData>,
 }
 
@@ -90,6 +96,10 @@ struct DeviceLoginCode {
 
 /// Return stored authentication status without leaking token payload.
 pub fn status() -> AuthStatus {
+	if let Some(tokens) = load_cached_tokens() {
+		return AuthStatus { signed_in: true, account_id: tokens.account_id };
+	}
+
 	match load_stored_auth().and_then(valid_tokens_or_none) {
 		Ok(Some(auth)) => AuthStatus { signed_in: true, account_id: auth.account_id },
 		_ => AuthStatus { signed_in: false, account_id: None },
@@ -98,33 +108,19 @@ pub fn status() -> AuthStatus {
 
 /// Remove stored auth tokens (keyring and fallback file).
 pub fn sign_out() -> AuthResult<()> {
+	clear_cached_session_tokens();
+
 	let base = app_config_dir()?;
+
 	clear_keyring_entry(&base)?;
 	clear_auth_file(&base)?;
+
 	Ok(())
 }
 
 /// Start browser login flow and store OAuth credentials.
 pub fn sign_in_with_chatgpt() -> AuthResult<AuthRecord> {
 	sign_in_with_chatgpt_browser()
-}
-
-fn sign_in_with_chatgpt_browser() -> AuthResult<AuthRecord> {
-	let pkce = generate_pkce();
-	let state = generate_state();
-	let redirect_uri = browser_redirect_uri();
-	let authorize_url =
-		build_authorize_url(&redirect_uri, &pkce.code_challenge, &state, DEFAULT_ISSUER);
-
-	webbrowser::open(&authorize_url)
-		.map_err(|_| "failed to open browser for ChatGPT login".to_string())?;
-	wait_for_callback(&state, &pkce, &redirect_uri, DEFAULT_ISSUER)
-}
-
-fn browser_redirect_uri() -> String {
-	// Codex OSS uses http://localhost:<port>/auth/callback for browser OAuth redirect URI.
-	// Aligning here avoids auth.openai.com rejecting 127.0.0.1 redirect URIs for this client id.
-	format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
 }
 
 /// Start device-code flow and store OAuth credentials.
@@ -141,7 +137,9 @@ where
 {
 	let device_code = request_device_code()?;
 	let verification_uri = format!("{DEFAULT_ISSUER}/codex/device");
+
 	on_device_code(&device_code.user_code, &verification_uri);
+
 	let _ = webbrowser::open(&verification_uri);
 	let login_code = poll_device_code(&device_code)?;
 	let redirect_uri = format!("{DEFAULT_ISSUER}/deviceauth/callback");
@@ -152,6 +150,7 @@ where
 		&redirect_uri,
 		DEFAULT_ISSUER,
 	)?;
+
 	store_tokens(&tokens)?;
 
 	Ok(AuthRecord { account_id: tokens.account_id })
@@ -160,6 +159,9 @@ where
 /// Returns `(access_token, account_id)` for API calls.
 /// Falls back to `OPENAI_API_KEY` only when no stored OAuth token exists.
 pub fn access_token() -> AuthResult<(String, Option<String>)> {
+	if let Some(tokens) = load_cached_tokens() {
+		return Ok((tokens.access_token, tokens.account_id));
+	}
 	if let Some(tokens) = load_stored_auth().and_then(valid_tokens_or_none)? {
 		return Ok((tokens.access_token, tokens.account_id));
 	}
@@ -167,6 +169,25 @@ pub fn access_token() -> AuthResult<(String, Option<String>)> {
 	std::env::var("OPENAI_API_KEY")
 		.map(|value| (value, None))
 		.map_err(|_| "not signed in and OPENAI_API_KEY is not set".to_string())
+}
+
+fn sign_in_with_chatgpt_browser() -> AuthResult<AuthRecord> {
+	let pkce = generate_pkce();
+	let state = generate_state();
+	let redirect_uri = browser_redirect_uri();
+	let authorize_url =
+		build_authorize_url(&redirect_uri, &pkce.code_challenge, &state, DEFAULT_ISSUER);
+
+	webbrowser::open(&authorize_url)
+		.map_err(|_| "failed to open browser for ChatGPT login".to_string())?;
+
+	wait_for_callback(&state, &pkce, &redirect_uri, DEFAULT_ISSUER)
+}
+
+fn browser_redirect_uri() -> String {
+	// Codex OSS uses http://localhost:<port>/auth/callback for browser OAuth redirect URI.
+	// Aligning here avoids auth.openai.com rejecting 127.0.0.1 redirect URIs for this client id.
+	format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
 }
 
 fn valid_tokens_or_none(auth: Option<StoredAuth>) -> AuthResult<Option<TokenData>> {
@@ -182,7 +203,25 @@ fn valid_tokens_or_none(auth: Option<StoredAuth>) -> AuthResult<Option<TokenData
 	if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
 		return Ok(None);
 	}
+
 	Ok(Some(tokens))
+}
+
+fn load_cached_tokens() -> Option<TokenData> {
+	let cached = {
+		let cache = session_token_cache().read().unwrap_or_else(|err| err.into_inner());
+
+		cache.clone()
+	};
+	let tokens = cached?;
+
+	if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
+		clear_cached_session_tokens();
+
+		return None;
+	}
+
+	Some(tokens)
 }
 
 fn request_device_code() -> AuthResult<DeviceCode> {
@@ -191,16 +230,14 @@ fn request_device_code() -> AuthResult<DeviceCode> {
 		&format!("{DEFAULT_ISSUER}/api/accounts/deviceauth/usercode"),
 		&payload.to_string(),
 	)?;
-	let parsed: serde_json::Value = serde_json::from_str(&response)
+	let parsed: Value = serde_json::from_str(&response)
 		.map_err(|err| format!("invalid device code response: {err}"))?;
-
 	let interval_secs = parsed
 		.get("interval")
 		.and_then(|value| value.as_str())
 		.and_then(|value| value.parse::<u64>().ok())
 		.or_else(|| parsed.get("interval").and_then(|value| value.as_u64()))
 		.unwrap_or(5);
-
 	let device_auth_id =
 		parsed.get("device_auth_id").and_then(|value| value.as_str()).unwrap_or_else(|| {
 			parsed.get("deviceauth_id").and_then(|value| value.as_str()).unwrap_or("")
@@ -210,6 +247,7 @@ fn request_device_code() -> AuthResult<DeviceCode> {
 		.and_then(|value| value.as_str())
 		.or_else(|| parsed.get("usercode").and_then(|value| value.as_str()))
 		.ok_or_else(|| "user code missing".to_string())?;
+
 	if device_auth_id.is_empty() {
 		return Err("device_auth_id missing".to_string());
 	}
@@ -233,11 +271,12 @@ fn poll_device_code(device_code: &DeviceCode) -> AuthResult<DeviceLoginCode> {
 
 	loop {
 		let response = post_raw(&endpoint, &body)?;
+
 		if response.status().is_success() {
 			let text = response
 				.text()
 				.map_err(|err| format!("failed to read device-auth response: {err}"))?;
-			let parsed: serde_json::Value = serde_json::from_str(&text)
+			let parsed: Value = serde_json::from_str(&text)
 				.map_err(|err| format!("invalid device-auth token response: {err}"))?;
 			let authorization_code = parsed
 				.get("authorization_code")
@@ -247,18 +286,19 @@ fn poll_device_code(device_code: &DeviceCode) -> AuthResult<DeviceLoginCode> {
 				.get("code_verifier")
 				.and_then(|value| value.as_str())
 				.ok_or_else(|| "code_verifier missing".to_string())?;
+
 			return Ok(DeviceLoginCode {
 				authorization_code: authorization_code.to_string(),
 				code_verifier: code_verifier.to_string(),
 			});
 		}
-
 		if response.status().as_u16() != 403 && response.status().as_u16() != 404 {
 			return Err(format!("device-auth polling failed: status {}", response.status()));
 		}
 		if start.elapsed() > max_wait {
 			return Err("device auth expired".to_string());
 		}
+
 		thread::sleep(
 			Duration::from_secs(device_code.interval_secs).min(max_wait - start.elapsed()),
 		);
@@ -279,9 +319,8 @@ fn exchange_authorization_code(
 		url_encode(&pkce.code_verifier),
 	);
 	let response = post_form(&format!("{issuer}/oauth/token"), &form)?;
-	let parsed: serde_json::Value =
+	let parsed: Value =
 		serde_json::from_str(&response).map_err(|err| format!("invalid token response: {err}"))?;
-
 	let id_token = parsed
 		.get("id_token")
 		.and_then(|value| value.as_str())
@@ -316,68 +355,118 @@ fn store_tokens(tokens: &TokenData) -> AuthResult<()> {
 	let base = app_config_dir()?;
 	let serialized =
 		serde_json::to_string_pretty(&auth).map_err(|err| format!("serialize auth: {err}"))?;
-
-	match save_to_keyring(&base, &serialized) {
+	let keyring_saved = match save_to_keyring(&base, &serialized) {
 		Ok(()) => {
-			verify_keyring_storage(&base, tokens)?;
-			let _ = clear_auth_file(&base);
-			Ok(())
+			if should_verify_keyring_storage() {
+				verify_keyring_storage(&base, tokens)?;
+			}
+
+			true
 		},
 		Err(err) =>
 			if auth_file_fallback_enabled() {
 				tracing::warn!("auth keyring save failed, falling back to auth.json: {err}");
-				save_to_file(&base, &serialized)
+
+				save_to_file(&base, &serialized)?;
+
+				false
 			} else {
-				Err(format!(
+				return Err(format!(
 					"auth keychain save failed: {err} (set {AUTH_FILE_FALLBACK_ENV}=1 to allow insecure auth.json fallback)"
-				))
+				));
 			},
+	};
+
+	cache_session_tokens(tokens);
+
+	if keyring_saved {
+		let _ = clear_auth_file(&base);
 	}
+
+	Ok(())
 }
 
 fn verify_keyring_storage(base: &Path, expected_tokens: &TokenData) -> AuthResult<()> {
 	let mut last_err = String::from("auth keyring save verification timed out");
+
 	for _ in 0..KEYRING_VERIFY_ATTEMPTS {
 		match load_from_keyring(base)? {
 			Some(auth) => {
 				let stored_tokens = auth.tokens.ok_or_else(|| {
 					String::from("auth keyring verification found stored auth without tokens")
 				})?;
+
 				if stored_tokens == *expected_tokens {
 					return Ok(());
 				}
+
 				return Err(String::from("auth keyring verification mismatch"));
 			},
 			None => {
 				last_err = String::from("auth keyring verification not found");
+
 				thread::sleep(Duration::from_millis(KEYRING_VERIFY_DELAY_MS));
 			},
 		}
 	}
+
 	Err(last_err)
 }
 
 fn load_stored_auth() -> AuthResult<Option<StoredAuth>> {
 	let base = app_config_dir()?;
+
 	if let Some(auth) = load_from_keyring(&base)? {
 		return Ok(Some(auth));
 	}
+
 	if auth_file_fallback_enabled() { load_from_file(&base) } else { Ok(None) }
 }
 
 fn auth_file_fallback_enabled() -> bool {
-	match std::env::var(AUTH_FILE_FALLBACK_ENV) {
+	env_flag_enabled(AUTH_FILE_FALLBACK_ENV)
+}
+
+fn should_verify_keyring_storage() -> bool {
+	env_flag_enabled(KEYRING_VERIFY_ENABLED_ENV)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+	match std::env::var(name) {
 		Ok(value) => {
 			let value = value.trim().to_ascii_lowercase();
+
 			value == "1" || value == "true" || value == "yes"
 		},
 		Err(_) => false,
 	}
 }
 
+fn session_token_cache() -> &'static RwLock<Option<TokenData>> {
+	SESSION_TOKEN_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn cache_session_tokens(tokens: &TokenData) {
+	let mut cache = session_token_cache().write().unwrap_or_else(|err| err.into_inner());
+
+	*cache = Some(tokens.clone());
+}
+
+fn clear_cached_session_tokens() {
+	let mut cache = session_token_cache().write().unwrap_or_else(|err| err.into_inner());
+
+	*cache = None;
+}
+
 fn save_to_keyring(base: &Path, payload: &str) -> io::Result<()> {
 	let key = auth_key(base).map_err(io::Error::other)?;
+	#[cfg(test)]
+	if env_flag_enabled(TEST_FORCE_KEYRING_ERROR_ENV) {
+		return Err(io::Error::other("forced test keyring error"));
+	}
+
 	let entry = Entry::new(KEYRING_SERVICE, &key).map_err(io::Error::other)?;
+
 	entry.set_password(payload).map_err(io::Error::other)
 }
 
@@ -387,32 +476,37 @@ fn load_from_keyring(base: &Path) -> AuthResult<Option<StoredAuth>> {
 		Ok(entry) => entry,
 		Err(_) => return Ok(None),
 	};
-
 	let value = match entry.get_password() {
 		Ok(value) => value,
 		Err(err) => {
 			let err_text = err.to_string();
+
 			if err_text.contains("not found") {
 				return Ok(None);
 			}
+
 			return Err(format!("keyring read failed: {err_text}"));
 		},
 	};
 	let parsed = serde_json::from_str(&value)
 		.map_err(|err| format!("decode keyring auth json failed: {err}"))?;
+
 	Ok(Some(parsed))
 }
 
 fn clear_keyring_entry(base: &Path) -> AuthResult<()> {
 	let key = auth_key(base)?;
+
 	match Entry::new(KEYRING_SERVICE, &key) {
 		Ok(entry) => {
 			if let Err(err) = entry.delete_credential() {
 				let message = err.to_string();
+
 				if !message.contains("not found") {
 					return Err(format!("keyring delete failed: {message}"));
 				}
 			}
+
 			Ok(())
 		},
 		Err(_) => Ok(()),
@@ -421,15 +515,18 @@ fn clear_keyring_entry(base: &Path) -> AuthResult<()> {
 
 fn save_to_file(base: &Path, payload: &str) -> AuthResult<()> {
 	let path = base.join(AUTH_FILE_NAME);
+
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent).map_err(|err| format!("create auth dir failed: {err}"))?;
 	}
 
 	let mut builder = OpenOptions::new();
+
 	builder.create(true).truncate(true).write(true);
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::OpenOptionsExt;
+
 		builder.mode(0o600);
 	}
 
@@ -439,14 +536,17 @@ fn save_to_file(base: &Path, payload: &str) -> AuthResult<()> {
 		.write(true)
 		.open(&path)
 		.map_err(|err| format!("create auth file failed: {err}"))?;
+
 	file.write_all(payload.as_bytes()).map_err(|err| format!("write auth file failed: {err}"))?;
 
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt;
+
 		fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
 			.map_err(|err| format!("set auth file permissions failed: {err}"))?;
 	}
+
 	Ok(())
 }
 
@@ -458,14 +558,18 @@ fn load_from_file(base: &Path) -> AuthResult<Option<StoredAuth>> {
 		Err(err) => return Err(format!("open auth file failed: {err}")),
 	};
 	let mut payload = String::new();
+
 	file.read_to_string(&mut payload).map_err(|err| format!("read auth file failed: {err}"))?;
+
 	let parsed: StoredAuth =
 		serde_json::from_str(&payload).map_err(|err| format!("decode auth file failed: {err}"))?;
+
 	Ok(Some(parsed))
 }
 
 fn clear_auth_file(base: &Path) -> AuthResult<()> {
 	let path = base.join(AUTH_FILE_NAME);
+
 	match fs::remove_file(&path) {
 		Ok(()) => Ok(()),
 		Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -481,9 +585,9 @@ fn wait_for_callback(
 ) -> AuthResult<AuthRecord> {
 	let server = Server::http(format!("localhost:{DEFAULT_PORT}"))
 		.map_err(|err| format!("failed to bind local callback server: {err}"))?;
-
 	let start = Instant::now();
 	let timeout = Duration::from_secs(180);
+
 	loop {
 		let request = match server.recv_timeout(Duration::from_millis(200)) {
 			Ok(Some(request)) => request,
@@ -491,6 +595,7 @@ fn wait_for_callback(
 				if start.elapsed() > timeout {
 					return Err("browser login timeout".to_string());
 				}
+
 				continue;
 			},
 			Err(err) => return Err(format!("auth callback wait failed: {err}")),
@@ -518,16 +623,19 @@ fn handle_callback_request(
 		Ok(parsed) => parsed,
 		Err(err) => {
 			respond_error(request, 400, &format!("bad request: {err}"));
+
 			return Err("callback url parse failed".to_string());
 		},
 	};
 
 	if parsed.path() != REDIRECT_URI_PATH {
 		respond_text(request, 404, "not found");
+
 		return Ok(None);
 	}
 
 	let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+
 	if let Some(error) = params.get("error").filter(|v| !v.is_empty()) {
 		let details = params
 			.get("error_description")
@@ -537,14 +645,19 @@ fn handle_callback_request(
 		} else {
 			format!("oauth callback error: {error} ({details})")
 		};
+
 		respond_error(request, 400, &message);
+
 		return Err(message);
 	}
 
 	let state = params.get("state").map_or("", std::string::String::as_str);
+
 	if state != expected_state {
 		let message = "state mismatch".to_string();
+
 		respond_error(request, 400, &message);
+
 		return Err(message);
 	}
 
@@ -554,34 +667,44 @@ fn handle_callback_request(
 				Ok(tokens) => tokens,
 				Err(err) => {
 					let message = format!("oauth token exchange failed: {err}");
+
 					respond_error(request, 400, &message);
+
 					return Err(message);
 				},
 			};
+
 			if let Err(err) = store_tokens(&tokens) {
 				let message = format!("oauth token save failed: {err}");
+
 				respond_error(request, 500, &message);
+
 				return Err(message);
 			}
+
 			respond_html(request, 200, &success_redirect_page_html());
+
 			AuthRecord { account_id: tokens.account_id }
 		},
 		None => {
 			let message = "missing authorization code".to_string();
+
 			respond_error(request, 400, &message);
+
 			return Err(message);
 		},
 	};
+
 	Ok(Some(record))
 }
 
 fn respond_text(request: Request, status_code: u16, body: &str) {
-	let response = HttpResponse::from_string(body).with_status_code(status_code);
+	let response = tiny_http::Response::from_string(body).with_status_code(status_code);
 	let _ = request.respond(response);
 }
 
 fn respond_html(request: Request, status_code: u16, body: &str) {
-	let response = HttpResponse::from_string(body)
+	let response = tiny_http::Response::from_string(body)
 		.with_status_code(status_code)
 		.with_header(
 			Header::from_bytes("Content-Type", "text/html; charset=utf-8")
@@ -598,6 +721,7 @@ fn respond_error(request: Request, status_code: u16, message: &str) {
 		r#"<html><body><p>{}</p><p>Close this window and retry from Voxit.</p></body></html>"#,
 		html_escape(message)
 	);
+
 	respond_html(request, status_code, &body);
 }
 
@@ -708,6 +832,7 @@ fn build_authorize_url(
 		Url::parse("https://auth.openai.com/oauth/authorize")
 			.unwrap_or_else(|_| Url::parse("https://example.com").expect("valid fallback url"))
 	});
+
 	url.query_pairs_mut().append_pair("response_type", "code");
 	url.query_pairs_mut().append_pair("client_id", CLIENT_ID);
 	url.query_pairs_mut().append_pair("redirect_uri", redirect_uri);
@@ -733,6 +858,7 @@ fn post_json(url: &str, body: &str) -> AuthResult<String> {
 		.body(body.to_string())
 		.send()
 		.map_err(|err| format!("request failed: {err}"))?;
+
 	parse_response(response, url)
 }
 
@@ -747,10 +873,11 @@ fn post_form(url: &str, body: &str) -> AuthResult<String> {
 		.body(body.to_string())
 		.send()
 		.map_err(|err| format!("request failed: {err}"))?;
+
 	parse_response(response, url)
 }
 
-fn post_raw(url: &str, body: &[u8]) -> AuthResult<Response> {
+fn post_raw(url: &str, body: &[u8]) -> AuthResult<reqwest::blocking::Response> {
 	let client = Client::builder()
 		.timeout(Duration::from_secs(120))
 		.build()
@@ -761,21 +888,25 @@ fn post_raw(url: &str, body: &[u8]) -> AuthResult<Response> {
 		.body(body.to_vec())
 		.send()
 		.map_err(|err| format!("request failed: {err}"))?;
+
 	Ok(response)
 }
 
-fn parse_response(response: Response, context: &str) -> AuthResult<String> {
+fn parse_response(response: reqwest::blocking::Response, context: &str) -> AuthResult<String> {
 	if !response.status().is_success() {
 		let status = response.status();
 		let body = response.text().unwrap_or_else(|_| "<unreadable>".to_string());
 		let detail = parse_error_text(&body);
+
 		return Err(format!("oauth request to {context} failed ({status}): {detail}"));
 	}
+
 	response.text().map_err(|err| format!("failed to read response body: {err}"))
 }
 
 fn parse_error_text(raw: &str) -> String {
-	let parsed = serde_json::from_str::<serde_json::Value>(raw).ok();
+	let parsed = serde_json::from_str::<Value>(raw).ok();
+
 	if let Some(json) = parsed {
 		if let Some(error_description) =
 			json.get("error_description").and_then(|value| value.as_str())
@@ -786,40 +917,48 @@ fn parse_error_text(raw: &str) -> String {
 			return error.to_string();
 		}
 	}
+
 	raw.to_string()
 }
 
-fn extract_claims(id_token: &str) -> Option<HashMap<String, serde_json::Value>> {
+fn extract_claims(id_token: &str) -> Option<HashMap<String, Value>> {
 	let mut parts = id_token.split('.');
 	let _header = parts.next()?;
 	let payload = parts.next()?;
 	let payload =
 		base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
-	let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+	let value: Value = serde_json::from_slice(&payload).ok()?;
 	let claims = value.get("https://api.openai.com/auth")?.as_object()?;
+
 	Some(claims.clone().into_iter().collect())
 }
 
 fn is_token_expired(created_at_unix: u64, expires_in: Option<u64>) -> bool {
-	let ttl = expires_in.unwrap_or(3600).saturating_sub(60);
+	let ttl = expires_in.unwrap_or(3_600).saturating_sub(60);
 	let now = now_unix();
+
 	now >= created_at_unix.saturating_add(ttl)
 }
 
 fn generate_pkce() -> PkceCodes {
 	let mut bytes = [0_u8; 64];
 	let mut rng = rand::rng();
+
 	rng.fill(&mut bytes);
+
 	let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
 	let challenge = Sha256::digest(code_verifier.as_bytes());
 	let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge);
+
 	PkceCodes { code_verifier, code_challenge }
 }
 
 fn generate_state() -> String {
 	let mut bytes = [0_u8; 32];
 	let mut rng = rand::rng();
+
 	rng.fill(&mut bytes);
+
 	base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -836,10 +975,13 @@ fn app_config_dir() -> AuthResult<PathBuf> {
 fn auth_key(base_path: &Path) -> AuthResult<String> {
 	let canonical = base_path.canonicalize().unwrap_or_else(|_| base_path.to_path_buf());
 	let mut hasher = Sha256::new();
+
 	hasher.update(canonical.to_string_lossy().as_bytes());
+
 	let digest = hasher.finalize();
 	let hex = format!("{digest:x}");
 	let short = hex.get(..16).unwrap_or(&hex);
+
 	Ok(format!("{KEYRING_KEY_PREFIX}{short}"))
 }
 
@@ -849,6 +991,7 @@ fn url_encode(value: &str) -> String {
 
 fn html_escape(raw: &str) -> String {
 	let mut out = String::new();
+
 	for ch in raw.chars() {
 		match ch {
 			'&' => out.push_str("&amp;"),
@@ -859,12 +1002,43 @@ fn html_escape(raw: &str) -> String {
 			_ => out.push(ch),
 		}
 	}
+
 	out
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::auth::{
+		AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, DEFAULT_ISSUER, DEFAULT_PORT,
+		HashMap, KEYRING_VERIFY_ENABLED_ENV, REDIRECT_URI_PATH, StoredAuth,
+		TEST_FORCE_KEYRING_ERROR_ENV, TokenData, Url, access_token, app_config_dir,
+		browser_redirect_uri, build_authorize_url, cache_session_tokens,
+		clear_cached_session_tokens, load_from_file, now_unix, save_to_file,
+		should_verify_keyring_storage, status, store_tokens,
+	};
+	use std::{fs, sync::Mutex};
+
+	static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+	fn set_env(key: &str, value: Option<&str>) -> String {
+		let previous = std::env::var(key).unwrap_or_default();
+
+		if let Some(value) = value {
+			unsafe { std::env::set_var(key, value) };
+		} else {
+			unsafe { std::env::remove_var(key) };
+		}
+
+		previous
+	}
+
+	fn restore_env(key: &str, previous: String) {
+		if previous.is_empty() {
+			unsafe { std::env::remove_var(key) };
+		} else {
+			unsafe { std::env::set_var(key, previous) };
+		}
+	}
 
 	#[test]
 	fn browser_redirect_uri_matches_codex() {
@@ -902,5 +1076,100 @@ mod tests {
 		assert_eq!(params.get("codex_cli_simplified_flow").map(String::as_str), Some("true"));
 		assert_eq!(params.get("state").map(String::as_str), Some("state123"));
 		assert_eq!(params.get("originator").map(String::as_str), Some(CODEX_OAUTH_ORIGINATOR));
+	}
+
+	#[test]
+	fn status_and_access_token_use_in_memory_cache() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+
+		cache_session_tokens(&TokenData {
+			id_token: "id-token".to_string(),
+			access_token: "access-token".to_string(),
+			refresh_token: None,
+			account_id: Some("account-1".to_string()),
+			created_at_unix: now_unix(),
+			expires_in_seconds: Some(3_600),
+		});
+
+		let status = status();
+
+		assert!(status.signed_in);
+		assert_eq!(status.account_id, Some("account-1".to_string()));
+
+		let token = access_token().expect("token from cache");
+
+		assert_eq!(token.0, "access-token");
+		assert_eq!(token.1, Some("account-1".to_string()));
+
+		clear_cached_session_tokens();
+	}
+
+	#[test]
+	fn keyring_verification_is_disabled_by_default() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+		let previous = set_env(KEYRING_VERIFY_ENABLED_ENV, None);
+
+		assert!(!should_verify_keyring_storage());
+
+		restore_env(KEYRING_VERIFY_ENABLED_ENV, previous);
+	}
+
+	#[test]
+	fn keyring_verification_respects_env_flag() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+		let previous = set_env(KEYRING_VERIFY_ENABLED_ENV, Some("1"));
+
+		assert!(should_verify_keyring_storage());
+
+		restore_env(KEYRING_VERIFY_ENABLED_ENV, previous);
+	}
+
+	#[test]
+	fn fallback_to_auth_json_preserves_file_when_keyring_fails() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+		let home = std::env::temp_dir().join(format!("voxit-auth-test-{}", now_unix()));
+		let home = home.to_string_lossy().to_string();
+		let previous_home = set_env("HOME", Some(&home));
+		let previous_fallback = set_env(AUTH_FILE_FALLBACK_ENV, Some("1"));
+		let previous_force = set_env(TEST_FORCE_KEYRING_ERROR_ENV, Some("1"));
+		let _ = fs::remove_dir_all(home.clone());
+		let base = app_config_dir().expect("app config dir");
+		let original_payload = StoredAuth {
+			auth_mode: Some("chatgpt".to_string()),
+			openai_api_key: Some("legacy-key".to_string()),
+			tokens: Some(TokenData {
+				id_token: "legacy-id".to_string(),
+				access_token: "legacy-access".to_string(),
+				refresh_token: Some("legacy-refresh".to_string()),
+				account_id: Some("legacy-account".to_string()),
+				created_at_unix: now_unix(),
+				expires_in_seconds: Some(3_600),
+			}),
+		};
+		let original_auth_json =
+			serde_json::to_string_pretty(&original_payload).expect("serialize fallback auth");
+
+		save_to_file(&base, &original_auth_json).expect("seed fallback auth file");
+
+		let tokens = TokenData {
+			id_token: "new-id".to_string(),
+			access_token: "new-access".to_string(),
+			refresh_token: Some("new-refresh".to_string()),
+			account_id: Some("new-account".to_string()),
+			created_at_unix: now_unix(),
+			expires_in_seconds: Some(3_600),
+		};
+
+		assert!(store_tokens(&tokens).is_ok());
+
+		let saved = load_from_file(&base).expect("read fallback auth file").expect("file exists");
+
+		assert_eq!(saved.tokens.expect("tokens").access_token, "new-access");
+
+		restore_env(TEST_FORCE_KEYRING_ERROR_ENV, previous_force);
+		restore_env(AUTH_FILE_FALLBACK_ENV, previous_fallback);
+		restore_env("HOME", previous_home);
+
+		let _ = fs::remove_dir_all(home);
 	}
 }

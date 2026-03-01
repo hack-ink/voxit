@@ -6,6 +6,7 @@
 mod prelude {
 	pub use color_eyre::eyre::{Result, eyre};
 }
+
 use std::{
 	fs,
 	path::Path,
@@ -27,19 +28,28 @@ use eframe::{
 #[cfg(target_os = "macos")] use global_hotkey::GlobalHotKeyManager;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
-#[cfg(target_os = "macos")]
-use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use voxit_audio as audio;
-use voxit_core::{auth, config, openai, realtime, transcript};
 use voxit_macos as macos;
-
-use crate::prelude::Result;
+#[cfg(target_os = "macos")]
+use tray_icon::{
+	TrayIcon, TrayIconBuilder,
+	menu::{
+		Menu, MenuEvent, MenuItem, PredefinedMenuItem,
+		accelerator::{Accelerator, Code, Modifiers},
+	},
+};
 use audio::{InputDevice, Recorder};
-use auth::AuthRecord;
-use config::Config;
+use auth::{AuthRecord, AuthStatus};
 use macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
 use realtime::{RealtimeEvent, RealtimeSession};
-use transcript::TranscriptAssembler;
+
+use crate::prelude::Result;
+use voxit_core::{auth, config::Config, openai, realtime, transcript::TranscriptAssembler};
+
+#[cfg(target_os = "macos")]
+const TRAY_MENU_ITEM_SHOW: &str = "show_window";
+#[cfg(target_os = "macos")]
+const TRAY_MENU_ITEM_QUIT: &str = "quit_voxit";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HotkeyMode {
@@ -74,12 +84,14 @@ enum AppCommand {
 	ToggleRecording,
 	StartRecording,
 	StopRecording,
-	ToggleWindow,
+	ShowWindow,
+	Quit,
 }
 
 #[derive(Debug)]
 enum AuthEvent {
 	SignedIn(AuthRecord),
+	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
 	Status(String),
 	Failed(String),
@@ -100,6 +112,7 @@ struct VoxitApp {
 	is_finalizing: bool,
 	is_rewriting: bool,
 	ignore_rewrite_result: bool,
+	auth_status_refresh_started: bool,
 	status: String,
 	auth_status: String,
 	auth_busy: bool,
@@ -143,7 +156,7 @@ impl VoxitApp {
 		inference_rx: Receiver<openai::InferenceEvent>,
 		hotkey_mode_u8: Arc<AtomicU8>,
 	) -> Self {
-		let initial_auth = auth::status();
+		let start_hidden = config.ui.start_hidden;
 		let hotkey_mode = match config.hotkey.mode.as_str() {
 			"hold" => HotkeyMode::Hold,
 			_ => HotkeyMode::Toggle,
@@ -160,20 +173,15 @@ impl VoxitApp {
 			command_rx,
 			hotkey_mode_u8,
 			is_recording: false,
-			is_window_visible: true,
+			is_window_visible: !start_hidden,
 			is_finalizing: false,
 			is_rewriting: false,
 			ignore_rewrite_result: false,
+			auth_status_refresh_started: false,
 			hotkey_mode,
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
-			auth_status: if initial_auth.signed_in {
-				initial_auth
-					.account_id
-					.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
-			} else {
-				"Not signed in".to_string()
-			},
+			auth_status: "Checking auth...".to_string(),
 			auth_busy: false,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
@@ -184,12 +192,12 @@ impl VoxitApp {
 			did_request_microphone_on_startup: false,
 			did_request_accessibility_on_startup: false,
 			did_request_input_monitoring_on_startup: false,
-			microphone_permission_state: macos::microphone_permission_state(),
+			microphone_permission_state: voxit_macos::microphone_permission_state(),
 			microphone_checked: false,
-			accessibility_checked: macos::permission_is_granted(
+			accessibility_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::Accessibility,
 			),
-			input_monitoring_checked: macos::permission_is_granted(
+			input_monitoring_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::InputMonitoring,
 			),
 			audio_input_devices: Vec::new(),
@@ -207,6 +215,7 @@ impl VoxitApp {
 	}
 
 	fn handle_commands(&mut self, ctx: &Context) {
+		self.refresh_auth_status_async();
 		self.handle_auth_events();
 		self.handle_realtime_events();
 		self.handle_inference_events();
@@ -216,7 +225,8 @@ impl VoxitApp {
 				AppCommand::ToggleRecording => self.toggle_recording(),
 				AppCommand::StartRecording => self.start_recording(),
 				AppCommand::StopRecording => self.stop_recording(),
-				AppCommand::ToggleWindow => self.toggle_window(ctx),
+				AppCommand::ShowWindow => self.show_window(ctx),
+				AppCommand::Quit => self.quit_app(ctx),
 			}
 		}
 	}
@@ -253,7 +263,7 @@ impl VoxitApp {
 	}
 
 	fn refresh_input_devices(&mut self) {
-		match audio::list_input_devices() {
+		match voxit_audio::list_input_devices() {
 			Ok(devices) => {
 				self.audio_input_devices = devices;
 
@@ -293,6 +303,21 @@ impl VoxitApp {
 		}
 	}
 
+	fn refresh_auth_status_async(&mut self) {
+		if self.auth_status_refresh_started {
+			return;
+		}
+
+		self.auth_status_refresh_started = true;
+
+		let tx = self.auth_event_tx.clone();
+
+		thread::spawn(move || {
+			let status = auth::status();
+			let _ = tx.send(AuthEvent::StatusChecked(status));
+		});
+	}
+
 	fn handle_auth_events(&mut self) {
 		while let Ok(event) = self.auth_event_rx.try_recv() {
 			match event {
@@ -303,6 +328,17 @@ impl VoxitApp {
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
+				},
+				AuthEvent::StatusChecked(status) => {
+					self.auth_busy = false;
+					self.auth_status = if status.signed_in {
+						status.account_id.map_or_else(
+							|| "Signed in".to_string(),
+							|id| format!("Signed in: {id}"),
+						)
+					} else {
+						"Not signed in".to_string()
+					};
 				},
 				AuthEvent::DeviceCodeInfo { user_code, verification_uri } => {
 					self.device_code_user_code = Some(user_code);
@@ -326,12 +362,12 @@ impl VoxitApp {
 	}
 
 	fn refresh_permission_checks(&mut self) {
-		self.microphone_permission_state = macos::microphone_permission_state();
-		self.microphone_checked = macos::permission_is_granted(PermissionSettingsPane::Microphone);
+		self.microphone_permission_state = voxit_macos::microphone_permission_state();
+		self.microphone_checked = voxit_macos::permission_is_granted(PermissionSettingsPane::Microphone);
 		self.accessibility_checked =
-			macos::permission_is_granted(PermissionSettingsPane::Accessibility);
+			voxit_macos::permission_is_granted(PermissionSettingsPane::Accessibility);
 		self.input_monitoring_checked =
-			macos::permission_is_granted(PermissionSettingsPane::InputMonitoring);
+			voxit_macos::permission_is_granted(PermissionSettingsPane::InputMonitoring);
 	}
 
 	fn next_permission_step(&self) -> Option<PermissionSettingsPane> {
@@ -552,10 +588,12 @@ impl VoxitApp {
 		}
 
 		self.refresh_permission_checks();
+
 		if !self.microphone_checked {
 			self.status =
 				"Microphone permission not granted. Request it from Onboarding checklist first."
 					.to_string();
+
 			return;
 		}
 
@@ -567,12 +605,12 @@ impl VoxitApp {
 
 		self.ignore_rewrite_result = false;
 		self.target_app = if self.config.paste.lock_frontmost_app {
-			macos::capture_frontmost_app()
+			voxit_macos::capture_frontmost_app()
 		} else {
 			None
 		};
 
-		match audio::start_recording_with_stream(64, self.configured_input_device_id()) {
+		match voxit_audio::start_recording_with_stream(64, self.configured_input_device_id()) {
 			Ok((recorder, chunk_rx, device_selection)) => {
 				self.recording = Some(recorder);
 
@@ -684,7 +722,7 @@ impl VoxitApp {
 
 				return;
 			};
-			let wav = match audio::stop_recording(recorder) {
+			let wav = match voxit_audio::stop_recording(recorder) {
 				Ok(result) => {
 					self.state = "Stopped".to_string();
 					self.status = format!(
@@ -766,7 +804,7 @@ impl VoxitApp {
 		if self.config.paste.lock_frontmost_app
 			&& let Some(target_app) = self.target_app.as_ref()
 		{
-			let activated = macos::activate_target(target_app, 4, Duration::from_millis(80));
+			let activated = voxit_macos::activate_target(target_app, 4, Duration::from_millis(80));
 
 			if !activated {
 				tracing::warn!("failed to re-activate captured frontmost app before paste");
@@ -785,14 +823,19 @@ impl VoxitApp {
 
 	fn request_permission(&mut self, pane: PermissionSettingsPane) {
 		let pane_name = pane.display_name();
+
 		match pane {
 			PermissionSettingsPane::Microphone => {
-				let mic_state = macos::request_microphone_permission();
+				let mic_state = voxit_macos::request_microphone_permission();
+
 				self.refresh_permission_checks();
-				self.microphone_permission_state = macos::microphone_permission_state();
+
+				self.microphone_permission_state = voxit_macos::microphone_permission_state();
+
 				if self.microphone_permission_state == MicrophonePermissionState::Unknown {
 					self.microphone_permission_state = mic_state;
 				}
+
 				self.status = match mic_state {
 					MicrophonePermissionState::Granted =>
 						format!("{pane_name} permission granted."),
@@ -815,9 +858,11 @@ impl VoxitApp {
 				let granted = if self.accessibility_checked {
 					true
 				} else {
-					macos::request_permission(PermissionSettingsPane::Accessibility)
+					voxit_macos::request_permission(PermissionSettingsPane::Accessibility)
 				};
+
 				self.accessibility_checked = granted;
+
 				self.refresh_permission_checks();
 
 				self.status = if granted {
@@ -832,9 +877,11 @@ impl VoxitApp {
 				let granted = if self.input_monitoring_checked {
 					true
 				} else {
-					macos::request_permission(PermissionSettingsPane::InputMonitoring)
+					voxit_macos::request_permission(PermissionSettingsPane::InputMonitoring)
 				};
+
 				self.input_monitoring_checked = granted;
+
 				self.refresh_permission_checks();
 
 				self.status = if granted {
@@ -850,6 +897,7 @@ impl VoxitApp {
 
 	fn maybe_request_permissions_on_startup(&mut self) {
 		let next_step = self.next_permission_step();
+
 		if next_step.is_none() {
 			return;
 		}
@@ -857,18 +905,21 @@ impl VoxitApp {
 		match next_step {
 			Some(PermissionSettingsPane::Microphone) if !self.did_request_microphone_on_startup => {
 				self.did_request_microphone_on_startup = true;
+
 				self.request_permission(PermissionSettingsPane::Microphone);
 			},
 			Some(PermissionSettingsPane::Accessibility)
 				if !self.did_request_accessibility_on_startup =>
 			{
 				self.did_request_accessibility_on_startup = true;
+
 				self.request_permission(PermissionSettingsPane::Accessibility);
 			},
 			Some(PermissionSettingsPane::InputMonitoring)
 				if !self.did_request_input_monitoring_on_startup =>
 			{
 				self.did_request_input_monitoring_on_startup = true;
+
 				self.request_permission(PermissionSettingsPane::InputMonitoring);
 			},
 			_ => {},
@@ -1109,16 +1160,15 @@ impl VoxitApp {
 		}
 	}
 
-	fn toggle_window(&mut self, ctx: &Context) {
-		self.is_window_visible = !self.is_window_visible;
+	fn show_window(&mut self, ctx: &Context) {
+		self.is_window_visible = true;
 
-		let command = if self.is_window_visible {
-			egui::ViewportCommand::Visible(true)
-		} else {
-			egui::ViewportCommand::Visible(false)
-		};
+		ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+		ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+	}
 
-		ctx.send_viewport_cmd(command);
+	fn quit_app(&mut self, ctx: &Context) {
+		ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 	}
 }
 
@@ -1138,7 +1188,7 @@ impl VoxitApp {
 		_hotkey_manager: Option<GlobalHotKeyManager>,
 		_tray_icon: TrayIcon,
 	) -> Self {
-		let initial_auth = auth::status();
+		let start_hidden = config.ui.start_hidden;
 		let hotkey_mode = match config.hotkey.mode.as_str() {
 			"hold" => HotkeyMode::Hold,
 			_ => HotkeyMode::Toggle,
@@ -1154,19 +1204,14 @@ impl VoxitApp {
 			inference_rx,
 			hotkey_mode_u8,
 			is_recording: false,
-			is_window_visible: true,
+			is_window_visible: !start_hidden,
 			is_finalizing: false,
 			is_rewriting: false,
 			ignore_rewrite_result: false,
+			auth_status_refresh_started: false,
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
-			auth_status: if initial_auth.signed_in {
-				initial_auth
-					.account_id
-					.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
-			} else {
-				"Not signed in".to_string()
-			},
+			auth_status: "Checking auth...".to_string(),
 			auth_busy: false,
 			stream_committed: String::new(),
 			stream_draft: String::new(),
@@ -1177,12 +1222,12 @@ impl VoxitApp {
 			did_request_microphone_on_startup: false,
 			did_request_accessibility_on_startup: false,
 			did_request_input_monitoring_on_startup: false,
-			microphone_permission_state: macos::microphone_permission_state(),
+			microphone_permission_state: voxit_macos::microphone_permission_state(),
 			microphone_checked: false,
-			accessibility_checked: macos::permission_is_granted(
+			accessibility_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::Accessibility,
 			),
-			input_monitoring_checked: macos::permission_is_granted(
+			input_monitoring_checked: voxit_macos::permission_is_granted(
 				PermissionSettingsPane::InputMonitoring,
 			),
 			audio_input_devices: Vec::new(),
@@ -1213,9 +1258,11 @@ impl App for VoxitApp {
 		self.hotkey_mode_u8.store(self.hotkey_mode.as_u8(), Ordering::Release);
 
 		egui::CentralPanel::default().show(ctx, |ui| {
-			self.render_auth_section(ui);
-			self.render_runtime_controls(ui);
-			self.render_output_section(ui);
+			egui::ScrollArea::vertical().show(ui, |ui| {
+				self.render_auth_section(ui);
+				self.render_runtime_controls(ui);
+				self.render_output_section(ui);
+			});
 		});
 	}
 }
@@ -1281,9 +1328,37 @@ fn main() -> Result<()> {
 #[cfg(target_os = "macos")]
 fn create_tray_icon() -> Result<TrayIcon> {
 	let icon = build_tray_icon();
-	let tray_icon = TrayIconBuilder::new().with_tooltip("Voxit").with_icon(icon).build()?;
+	let menu = create_tray_menu()?;
+	let tray_icon = TrayIconBuilder::new()
+		.with_tooltip("Voxit")
+		.with_icon(icon)
+		.with_menu(Box::new(menu))
+		.build()?;
 
 	Ok(tray_icon)
+}
+
+#[cfg(target_os = "macos")]
+fn create_tray_menu() -> Result<Menu> {
+	let menu = Menu::new();
+	let show_item = MenuItem::with_id(
+		TRAY_MENU_ITEM_SHOW,
+		"Preferences…",
+		true,
+		Some(Accelerator::new(Some(Modifiers::META), Code::Comma)),
+	);
+	let quit_item = MenuItem::with_id(
+		TRAY_MENU_ITEM_QUIT,
+		"Quit Voxit",
+		true,
+		Some(Accelerator::new(Some(Modifiers::META), Code::KeyQ)),
+	);
+
+	menu.append(&show_item)?;
+	menu.append(&PredefinedMenuItem::separator())?;
+	menu.append(&quit_item)?;
+
+	Ok(menu)
 }
 
 #[cfg(target_os = "macos")]
@@ -1308,17 +1383,18 @@ fn build_tray_icon() -> tray_icon::Icon {
 
 #[cfg(target_os = "macos")]
 fn spawn_tray_listener(command_tx: Sender<AppCommand>) {
-	let receiver = TrayIconEvent::receiver().clone();
+	let receiver = MenuEvent::receiver().clone();
 
 	thread::spawn(move || {
 		while let Ok(event) = receiver.recv() {
-			if let TrayIconEvent::Click {
-				button: MouseButton::Left,
-				button_state: MouseButtonState::Up,
-				..
-			} = event
-			{
-				let _ = command_tx.send(AppCommand::ToggleWindow);
+			match event.id.as_ref() {
+				TRAY_MENU_ITEM_SHOW => {
+					let _ = command_tx.send(AppCommand::ShowWindow);
+				},
+				TRAY_MENU_ITEM_QUIT => {
+					let _ = command_tx.send(AppCommand::Quit);
+				},
+				_ => {},
 			}
 		}
 	});
