@@ -1,11 +1,9 @@
 //! macOS target app capture and activation helpers.
 
-use std::{ffi::c_void, thread::sleep, time::Duration};
-
-#[cfg(target_os = "macos")] use std::process::Command;
-
 #[cfg(not(target_os = "macos"))] use std::io;
+#[cfg(target_os = "macos")] use std::process::Command;
 #[cfg(target_os = "macos")] use std::ptr;
+use std::{ffi::c_void, time::Duration};
 
 #[cfg(target_os = "macos")] use block2::RcBlock;
 #[cfg(target_os = "macos")]
@@ -31,6 +29,50 @@ pub struct TargetApp {
 	/// Frontmost application name.
 	pub app_name: Option<String>,
 }
+impl TargetApp {
+	/// Whether all fields are missing.
+	pub fn is_empty(&self) -> bool {
+		self.pid.is_none() && self.bundle_id.is_none() && self.app_name.is_none()
+	}
+
+	fn log_id(&self) -> String {
+		if let Some(bundle_id) = self.bundle_id.as_ref().filter(|value| !value.is_empty()) {
+			return bundle_id.clone();
+		}
+
+		if let Some(app_name) = self.app_name.as_ref().filter(|value| !value.is_empty()) {
+			return app_name.clone();
+		}
+
+		"unknown".to_string()
+	}
+
+	fn matches(&self, other: &TargetApp) -> bool {
+		if self.is_empty() || other.is_empty() {
+			return false;
+		}
+
+		if let (Some(pid), Some(other_pid)) = (self.pid, other.pid)
+			&& pid == other_pid
+		{
+			return true;
+		}
+		if let (Some(bundle), Some(other_bundle)) =
+			(self.bundle_id.as_deref(), other.bundle_id.as_deref())
+			&& !bundle.is_empty()
+			&& bundle == other_bundle
+		{
+			return true;
+		}
+		if let (Some(name), Some(other_name)) =
+			(self.app_name.as_deref(), other.app_name.as_deref())
+		{
+			return !name.is_empty() && name == other_name;
+		}
+
+		false
+	}
+}
 
 /// Permission-related privacy panes exposed in the onboarding checklist.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +83,16 @@ pub enum PermissionSettingsPane {
 	Accessibility,
 	/// Input monitoring privacy settings.
 	InputMonitoring,
+}
+impl PermissionSettingsPane {
+	/// Human-friendly label for status text.
+	pub const fn display_name(self) -> &'static str {
+		match self {
+			Self::Microphone => "Microphone",
+			Self::Accessibility => "Accessibility",
+			Self::InputMonitoring => "Input Monitoring",
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,17 +109,6 @@ pub enum MicrophonePermissionState {
 	Prompted,
 	/// Platform or status could not be queried.
 	Unknown,
-}
-
-impl PermissionSettingsPane {
-	/// Human-friendly label for status text.
-	pub const fn display_name(self) -> &'static str {
-		match self {
-			Self::Microphone => "Microphone",
-			Self::Accessibility => "Accessibility",
-			Self::InputMonitoring => "Input Monitoring",
-		}
-	}
 }
 
 /// Check whether a permission pane is currently granted.
@@ -111,6 +152,7 @@ pub fn microphone_permission_state() -> MicrophonePermissionState {
 		unsafe { AVCaptureDevice::authorizationStatusForMediaType(audio_media_type) }
 	} else {
 		let fallback_media_type = NSString::from_str("soun");
+
 		unsafe { AVCaptureDevice::authorizationStatusForMediaType(fallback_media_type.as_ref()) }
 	};
 
@@ -135,12 +177,14 @@ pub fn microphone_permission_state() -> MicrophonePermissionState {
 #[cfg(target_os = "macos")]
 pub fn request_microphone_permission() -> MicrophonePermissionState {
 	let status = microphone_permission_state();
+
 	if !matches!(status, MicrophonePermissionState::NotDetermined) {
 		return status;
 	}
 
 	let callback = RcBlock::new(|_| {});
 	let media_type_audio = unsafe { AVMediaTypeAudio };
+
 	if let Some(audio_media_type) = media_type_audio {
 		unsafe {
 			AVCaptureDevice::requestAccessForMediaType_completionHandler(
@@ -150,6 +194,7 @@ pub fn request_microphone_permission() -> MicrophonePermissionState {
 		}
 	} else {
 		let fallback_media_type = NSString::from_str("soun");
+
 		unsafe {
 			AVCaptureDevice::requestAccessForMediaType_completionHandler(
 				fallback_media_type.as_ref(),
@@ -157,6 +202,12 @@ pub fn request_microphone_permission() -> MicrophonePermissionState {
 			);
 		}
 	}
+
+	// `requestAccessForMediaType:completionHandler:` completes asynchronously and invokes the
+	// handler on an arbitrary queue. In practice this should copy/retain the completion block, but
+	// to avoid any lifetime mismatch across FFI boundaries we intentionally keep the block alive
+	// for the remainder of the process.
+	std::mem::forget(callback);
 
 	MicrophonePermissionState::Prompted
 }
@@ -181,6 +232,7 @@ pub fn capture_frontmost_app() -> Option<TargetApp> {
 		Ok(result) => Some(result),
 		Err(err) => {
 			tracing::debug!(?err, "failed to capture frontmost app");
+
 			None
 		},
 	}
@@ -190,6 +242,7 @@ pub fn capture_frontmost_app() -> Option<TargetApp> {
 #[cfg(not(target_os = "macos"))]
 pub fn capture_frontmost_app() -> Option<TargetApp> {
 	let _ = io::Error::new(io::ErrorKind::Unsupported, "frontmost capture is macOS-only");
+
 	None
 }
 
@@ -205,6 +258,7 @@ pub fn activate_target(target: &TargetApp, attempts: u32, base_delay: Duration) 
 
 	for attempt_no in 1..=attempts {
 		let target_log = target.log_id();
+
 		match execute_applescript_raw(&script) {
 			Ok(_) => tracing::debug!(?attempt_no, target=%target_log, "activated target app"),
 			Err(err) => {
@@ -215,9 +269,9 @@ pub fn activate_target(target: &TargetApp, attempts: u32, base_delay: Duration) 
 		if capture_frontmost_app().is_some_and(|front| front.matches(target)) {
 			return true;
 		}
-
 		if attempt_no < attempts {
-			sleep(delay);
+			std::thread::sleep(delay);
+
 			delay = delay.saturating_mul(2).min(Duration::from_millis(500));
 		}
 	}
@@ -229,53 +283,6 @@ pub fn activate_target(target: &TargetApp, attempts: u32, base_delay: Duration) 
 #[cfg(not(target_os = "macos"))]
 pub fn activate_target(_target: &TargetApp, _attempts: u32, _base_delay: Duration) -> bool {
 	false
-}
-
-impl TargetApp {
-	/// Whether all fields are missing.
-	pub fn is_empty(&self) -> bool {
-		self.pid.is_none() && self.bundle_id.is_none() && self.app_name.is_none()
-	}
-
-	fn log_id(&self) -> String {
-		if let Some(bundle_id) = self.bundle_id.as_ref().filter(|value| !value.is_empty()) {
-			return bundle_id.clone();
-		}
-
-		if let Some(app_name) = self.app_name.as_ref().filter(|value| !value.is_empty()) {
-			return app_name.clone();
-		}
-
-		"unknown".to_string()
-	}
-
-	fn matches(&self, other: &TargetApp) -> bool {
-		if self.is_empty() || other.is_empty() {
-			return false;
-		}
-
-		if let (Some(pid), Some(other_pid)) = (self.pid, other.pid)
-			&& pid == other_pid
-		{
-			return true;
-		}
-
-		if let (Some(bundle), Some(other_bundle)) =
-			(self.bundle_id.as_deref(), other.bundle_id.as_deref())
-			&& !bundle.is_empty()
-			&& bundle == other_bundle
-		{
-			return true;
-		}
-
-		if let (Some(name), Some(other_name)) =
-			(self.app_name.as_deref(), other.app_name.as_deref())
-		{
-			return !name.is_empty() && name == other_name;
-		}
-
-		false
-	}
 }
 
 #[cfg(target_os = "macos")]
@@ -291,7 +298,6 @@ fn capture_frontmost_app_impl() -> Result<TargetApp, String> {
 		end try
 		return front_pid & "|" & front_bundle & "|" & front_name
 	end tell"#;
-
 	let output = execute_applescript_raw(script)?;
 	let mut parts = output.splitn(3, '|');
 	let pid = parts.next().and_then(parse_u32_trimmed);
@@ -330,10 +336,12 @@ fn execute_applescript_raw(script: &str) -> Result<String, String> {
 
 	if !output.status.success() {
 		let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
 		return Err(format!("osascript failed: {stderr}"));
 	}
 
 	let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
 	Ok(stdout.trim().to_string())
 }
 
@@ -345,12 +353,14 @@ fn execute_applescript_raw(_script: &str) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 fn activation_script_for_bundle_id(bundle_id: &str) -> String {
 	let escaped = escape_applescript_string(bundle_id);
+
 	format!(r#"tell application id "{escaped}" to activate"#)
 }
 
 #[cfg(target_os = "macos")]
 fn activation_script_for_app_name(app_name: &str) -> String {
 	let escaped = escape_applescript_string(app_name);
+
 	format!(r#"tell application "{escaped}" to activate"#)
 }
 
@@ -362,12 +372,14 @@ fn escape_applescript_string(input: &str) -> String {
 #[cfg(target_os = "macos")]
 fn parse_u32_trimmed(raw: &str) -> Option<u32> {
 	let value = raw.trim();
+
 	if value.is_empty() { None } else { value.parse::<u32>().ok() }
 }
 
 #[cfg(target_os = "macos")]
 fn normalize_optional_string(raw: &str) -> Option<String> {
 	let trimmed = raw.trim();
+
 	if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
@@ -445,7 +457,7 @@ unsafe extern "C" {
 		allocator: *const c_void,
 		keys: *const *const c_void,
 		values: *const *const c_void,
-		num_values: CfIndex,
+		num_values: isize,
 		key_callbacks: *const c_void,
 		value_callbacks: *const c_void,
 	) -> CfDictionaryRef;
@@ -456,8 +468,8 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-	fn AXIsProcessTrustedWithOptions(options: CfDictionaryRef) -> CfBoolean;
-	fn CGPreflightListenEventAccess() -> CfBoolean;
-	fn CGRequestListenEventAccess() -> CfBoolean;
+	fn AXIsProcessTrustedWithOptions(options: CfDictionaryRef) -> u8;
+	fn CGPreflightListenEventAccess() -> u8;
+	fn CGRequestListenEventAccess() -> u8;
 	static kAXTrustedCheckOptionPrompt: CfTypeRef;
 }

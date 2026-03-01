@@ -820,7 +820,7 @@ impl VoxitApp {
 					MicrophonePermissionState::Granted =>
 						format!("{pane_name} permission granted."),
 					MicrophonePermissionState::Prompted => format!(
-						"{pane_name} permission prompt shown. Approve it in macOS and re-check afterward."
+						"{pane_name} permission prompt shown. Approve it in macOS, then reopen Preferences."
 					),
 					MicrophonePermissionState::NotDetermined => format!(
 						"{pane_name} permission still not requested. Please respond to system prompt."
@@ -848,9 +848,7 @@ impl VoxitApp {
 				self.status = if granted {
 					format!("{pane_name} permission granted.")
 				} else {
-					format!(
-						"{pane_name} permission not granted. Re-check after responding to macOS dialog."
-					)
+					format!("{pane_name} permission not granted. Enable it in System Settings.")
 				};
 			},
 			PermissionSettingsPane::InputMonitoring => {
@@ -867,9 +865,7 @@ impl VoxitApp {
 				self.status = if granted {
 					format!("{pane_name} permission granted.")
 				} else {
-					format!(
-						"{pane_name} permission not granted. Re-check after responding to macOS dialog."
-					)
+					format!("{pane_name} permission not granted. Enable it in System Settings.")
 				};
 			},
 		}
@@ -923,6 +919,44 @@ impl VoxitApp {
 			ui.label(format!("Mode: {}", self.hotkey_mode.as_label()));
 		});
 		ui.separator();
+		self.render_permissions(ui);
+		ui.separator();
+		self.render_microphone_input(ui);
+		self.render_dictation_controls(ui);
+		ui.separator();
+		self.render_hotkey_controls(ui);
+	}
+
+	fn render_permissions(&mut self, ui: &mut Ui) {
+		ui.label("Permissions:");
+		ui.label(format!("Microphone: {}", self.microphone_status_text()));
+
+		if !self.microphone_checked && ui.button("Request Microphone permission").clicked() {
+			self.request_permission(PermissionSettingsPane::Microphone);
+		}
+
+		ui.label(format!(
+			"Accessibility (Cmd+V): {}",
+			if self.accessibility_checked { "granted" } else { "missing" }
+		));
+
+		if !self.accessibility_checked && ui.button("Request Accessibility permission").clicked() {
+			self.request_permission(PermissionSettingsPane::Accessibility);
+		}
+
+		ui.label(format!(
+			"Input Monitoring (global hotkey): {}",
+			if self.input_monitoring_checked { "granted" } else { "missing" }
+		));
+
+		if !self.input_monitoring_checked
+			&& ui.button("Request Input Monitoring permission").clicked()
+		{
+			self.request_permission(PermissionSettingsPane::InputMonitoring);
+		}
+	}
+
+	fn render_microphone_input(&mut self, ui: &mut Ui) {
 		ui.label("Microphone input:");
 
 		ui.horizontal(|ui| {
@@ -969,7 +1003,9 @@ impl VoxitApp {
 				self.persist_config();
 			}
 		});
+	}
 
+	fn render_dictation_controls(&mut self, ui: &mut Ui) {
 		let button_text = if self.is_recording { "Stop Dictation" } else { "Start Dictation" };
 
 		if ui.button(button_text).clicked() {
@@ -995,9 +1031,9 @@ impl VoxitApp {
 			self.state = "Done".to_string();
 			self.status = format!("Raw transcript pasted. {paste_status}");
 		}
+	}
 
-		ui.separator();
-
+	fn render_hotkey_controls(&mut self, ui: &mut Ui) {
 		ui.horizontal_wrapped(|ui| {
 			ui.label(format!("Hotkey mode: {}", self.hotkey_mode.as_label()));
 			ui.separator();
@@ -1033,33 +1069,7 @@ impl VoxitApp {
 		ui.separator();
 		ui.label("Pass2 Raw Transcript:");
 		ui.label(self.transcription_result.as_str());
-		ui.separator();
-		ui.label("Permissions:");
-		ui.label(format!("Microphone: {}", self.microphone_status_text()));
 
-		if !self.microphone_checked && ui.button("Request Microphone permission").clicked() {
-			self.request_permission(PermissionSettingsPane::Microphone);
-		}
-
-		ui.label(format!(
-			"Accessibility (Cmd+V): {}",
-			if self.accessibility_checked { "granted" } else { "missing" }
-		));
-
-		if !self.accessibility_checked && ui.button("Request Accessibility permission").clicked() {
-			self.request_permission(PermissionSettingsPane::Accessibility);
-		}
-
-		ui.label(format!(
-			"Input Monitoring (global hotkey): {}",
-			if self.input_monitoring_checked { "granted" } else { "missing" }
-		));
-
-		if !self.input_monitoring_checked
-			&& ui.button("Request Input Monitoring permission").clicked()
-		{
-			self.request_permission(PermissionSettingsPane::InputMonitoring);
-		}
 		if ui.button("Test Paste").clicked() {
 			self.accessibility_checked = true;
 
