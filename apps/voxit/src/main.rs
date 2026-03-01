@@ -123,9 +123,6 @@ struct VoxitApp {
 	transcription_result: String,
 	rewritten_result: String,
 	rewrite_enabled: bool,
-	did_request_microphone_on_startup: bool,
-	did_request_accessibility_on_startup: bool,
-	did_request_input_monitoring_on_startup: bool,
 	microphone_permission_state: MicrophonePermissionState,
 	microphone_checked: bool,
 	accessibility_checked: bool,
@@ -189,9 +186,6 @@ impl VoxitApp {
 			transcription_result: String::new(),
 			rewritten_result: String::new(),
 			rewrite_enabled,
-			did_request_microphone_on_startup: false,
-			did_request_accessibility_on_startup: false,
-			did_request_input_monitoring_on_startup: false,
 			microphone_permission_state: voxit_macos::microphone_permission_state(),
 			microphone_checked: false,
 			accessibility_checked: voxit_macos::permission_is_granted(
@@ -371,27 +365,6 @@ impl VoxitApp {
 			voxit_macos::permission_is_granted(PermissionSettingsPane::Accessibility);
 		self.input_monitoring_checked =
 			voxit_macos::permission_is_granted(PermissionSettingsPane::InputMonitoring);
-	}
-
-	fn next_permission_step(&self) -> Option<PermissionSettingsPane> {
-		if !self.microphone_checked {
-			Some(PermissionSettingsPane::Microphone)
-		} else if !self.accessibility_checked {
-			Some(PermissionSettingsPane::Accessibility)
-		} else if !self.input_monitoring_checked {
-			Some(PermissionSettingsPane::InputMonitoring)
-		} else {
-			None
-		}
-	}
-
-	fn permission_step_enabled(&self, pane: PermissionSettingsPane) -> bool {
-		match pane {
-			PermissionSettingsPane::Microphone => true,
-			PermissionSettingsPane::Accessibility => self.microphone_checked,
-			PermissionSettingsPane::InputMonitoring =>
-				self.microphone_checked && self.accessibility_checked,
-		}
 	}
 
 	fn microphone_status_text(&self) -> &'static str {
@@ -598,7 +571,7 @@ impl VoxitApp {
 
 		if !self.microphone_checked {
 			self.status =
-				"Microphone permission not granted. Request it from Onboarding checklist first."
+				"Microphone permission not granted. Open Preferences and request it first."
 					.to_string();
 
 			return;
@@ -902,37 +875,6 @@ impl VoxitApp {
 		}
 	}
 
-	fn maybe_request_permissions_on_startup(&mut self) {
-		let next_step = self.next_permission_step();
-
-		if next_step.is_none() {
-			return;
-		}
-
-		match next_step {
-			Some(PermissionSettingsPane::Microphone) if !self.did_request_microphone_on_startup => {
-				self.did_request_microphone_on_startup = true;
-
-				self.request_permission(PermissionSettingsPane::Microphone);
-			},
-			Some(PermissionSettingsPane::Accessibility)
-				if !self.did_request_accessibility_on_startup =>
-			{
-				self.did_request_accessibility_on_startup = true;
-
-				self.request_permission(PermissionSettingsPane::Accessibility);
-			},
-			Some(PermissionSettingsPane::InputMonitoring)
-				if !self.did_request_input_monitoring_on_startup =>
-			{
-				self.did_request_input_monitoring_on_startup = true;
-
-				self.request_permission(PermissionSettingsPane::InputMonitoring);
-			},
-			_ => {},
-		}
-	}
-
 	fn render_auth_section(&mut self, ui: &mut Ui) {
 		ui.heading("Voxit");
 		ui.label("macOS tray, global hotkey, Pass1 stream, Pass2 finalize, Pass3 guarded rewrite.");
@@ -1092,69 +1034,32 @@ impl VoxitApp {
 		ui.label("Pass2 Raw Transcript:");
 		ui.label(self.transcription_result.as_str());
 		ui.separator();
-		ui.label("Onboarding Checklist:");
+		ui.label("Permissions:");
+		ui.label(format!("Microphone: {}", self.microphone_status_text()));
 
-		let next_permission_step = self.next_permission_step();
+		if !self.microphone_checked && ui.button("Request Microphone permission").clicked() {
+			self.request_permission(PermissionSettingsPane::Microphone);
+		}
 
-		ui.horizontal(|ui| {
-			ui.label(format!("Microphone: {}", self.microphone_status_text()));
+		ui.label(format!(
+			"Accessibility (Cmd+V): {}",
+			if self.accessibility_checked { "granted" } else { "missing" }
+		));
 
-			let label = if self.microphone_checked {
-				"Re-check Microphone permission"
-			} else {
-				"Request Microphone permission"
-			};
+		if !self.accessibility_checked && ui.button("Request Accessibility permission").clicked() {
+			self.request_permission(PermissionSettingsPane::Accessibility);
+		}
 
-			if ui
-				.add_enabled(
-					next_permission_step == Some(PermissionSettingsPane::Microphone)
-						|| self.microphone_checked,
-					egui::Button::new(label),
-				)
-				.clicked()
-			{
-				self.request_permission(PermissionSettingsPane::Microphone);
-			}
-		});
-		ui.horizontal(|ui| {
-			ui.label(format!(
-				"Accessibility (Cmd+V): {}",
-				if self.accessibility_checked { "granted" } else { "missing" }
-			));
+		ui.label(format!(
+			"Input Monitoring (global hotkey): {}",
+			if self.input_monitoring_checked { "granted" } else { "missing" }
+		));
 
-			let can_request = self.accessibility_checked
-				|| (self.permission_step_enabled(PermissionSettingsPane::Accessibility)
-					&& next_permission_step == Some(PermissionSettingsPane::Accessibility));
-			let label = if self.accessibility_checked {
-				"Re-check Accessibility permission"
-			} else {
-				"Request Accessibility permission"
-			};
-
-			if ui.add_enabled(can_request, egui::Button::new(label)).clicked() {
-				self.request_permission(PermissionSettingsPane::Accessibility);
-			}
-		});
-		ui.horizontal(|ui| {
-			ui.label(format!(
-				"Input Monitoring (global hotkey): {}",
-				if self.input_monitoring_checked { "granted" } else { "missing" }
-			));
-
-			let can_request = self.input_monitoring_checked
-				|| (self.permission_step_enabled(PermissionSettingsPane::InputMonitoring)
-					&& next_permission_step == Some(PermissionSettingsPane::InputMonitoring));
-			let label = if self.input_monitoring_checked {
-				"Re-check Input Monitoring permission"
-			} else {
-				"Request Input Monitoring permission"
-			};
-
-			if ui.add_enabled(can_request, egui::Button::new(label)).clicked() {
-				self.request_permission(PermissionSettingsPane::InputMonitoring);
-			}
-		});
-
+		if !self.input_monitoring_checked
+			&& ui.button("Request Input Monitoring permission").clicked()
+		{
+			self.request_permission(PermissionSettingsPane::InputMonitoring);
+		}
 		if ui.button("Test Paste").clicked() {
 			self.accessibility_checked = true;
 
@@ -1174,6 +1079,8 @@ impl VoxitApp {
 	}
 
 	fn show_window(&mut self, ctx: &Context) {
+		self.refresh_permission_checks();
+
 		self.is_window_visible = true;
 
 		ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -1233,9 +1140,6 @@ impl VoxitApp {
 			transcription_result: String::new(),
 			rewritten_result: String::new(),
 			rewrite_enabled,
-			did_request_microphone_on_startup: false,
-			did_request_accessibility_on_startup: false,
-			did_request_input_monitoring_on_startup: false,
 			microphone_permission_state: voxit_macos::microphone_permission_state(),
 			microphone_checked: false,
 			accessibility_checked: voxit_macos::permission_is_granted(
@@ -1265,9 +1169,7 @@ impl VoxitApp {
 
 impl App for VoxitApp {
 	fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-		self.refresh_permission_checks();
 		self.handle_commands(ctx);
-		self.maybe_request_permissions_on_startup();
 		#[cfg(target_os = "macos")]
 		self.hotkey_mode_u8.store(self.hotkey_mode.as_u8(), Ordering::Release);
 
