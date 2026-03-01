@@ -1,0 +1,18 @@
+[package]
+authors.workspace    = true
+description          = "Voxit macOS platform integration layer."
+edition.workspace    = true
+homepage.workspace   = true
+license.workspace    = true
+name                 = "voxit-macos"
+readme.workspace     = true
+repository.workspace = true
+version.workspace    = true
+
+[dependencies]
+tracing = { version = "0.1" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2              = "0.6.2"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-foundation    = { version = "0.3.2", default-features = false, features = ["NSString"] }
