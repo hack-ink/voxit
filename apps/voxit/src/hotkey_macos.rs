@@ -12,17 +12,17 @@ use global_hotkey::{
 	hotkey::{Code, HotKey, Modifiers},
 };
 
-use crate::{AppCommand, HotkeyMode};
+use crate::{AppCommand, HotkeyMode, prelude::Result};
 
 pub(crate) fn spawn_global_hotkey_listener(
 	command_tx: Sender<AppCommand>,
 	mode: Arc<AtomicU8>,
-) -> crate::prelude::Result<GlobalHotKeyManager> {
+) -> Result<GlobalHotKeyManager> {
 	let manager = GlobalHotKeyManager::new().map_err(|err| {
 		crate::prelude::eyre!("Failed to initialize global hotkey manager: {err}")
 	})?;
-
 	let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+
 	manager.register(hotkey).map_err(|err| {
 		crate::prelude::eyre!("Failed to register global hotkey (Ctrl+Shift+Space): {err}")
 	})?;
@@ -46,12 +46,14 @@ pub(crate) fn spawn_global_hotkey_listener(
 					HotkeyMode::Hold =>
 						if !is_holding {
 							is_holding = true;
+
 							let _ = command_tx.send(AppCommand::StartRecording);
 						},
 				},
 				HotKeyState::Released =>
 					if is_holding {
 						is_holding = false;
+
 						let _ = command_tx.send(AppCommand::StopRecording);
 					},
 			}

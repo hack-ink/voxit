@@ -36,19 +36,6 @@ pub struct TranscriptSnapshot {
 	pub draft_item_id: Option<String>,
 }
 
-#[derive(Debug, Default)]
-struct CommittedItem {
-	text: String,
-	previous_item_id: Option<String>,
-	seen_seq: u64,
-}
-
-#[derive(Debug, Default)]
-struct DraftItem {
-	text: String,
-	seen_seq: u64,
-}
-
 /// Assembles `delta` and `completed` events into stable committed + draft text.
 #[derive(Debug, Default)]
 pub struct TranscriptAssembler {
@@ -58,7 +45,6 @@ pub struct TranscriptAssembler {
 	dirty_order: bool,
 	ordered_committed_ids: Vec<String>,
 }
-
 impl TranscriptAssembler {
 	/// Build a new transcript assembler.
 	pub fn new() -> Self {
@@ -71,6 +57,7 @@ impl TranscriptAssembler {
 		let draft = self.drafts.entry(item_id).or_default();
 
 		draft.seen_seq = seen_seq;
+
 		draft.text.push_str(&delta);
 	}
 
@@ -82,12 +69,13 @@ impl TranscriptAssembler {
 		transcript: String,
 	) {
 		let seen_seq = self.bump_seq();
+
 		self.committed.insert(
 			item_id.clone(),
 			CommittedItem { text: transcript, previous_item_id, seen_seq },
 		);
-
 		self.drafts.remove(&item_id);
+
 		self.dirty_order = true;
 	}
 
@@ -95,8 +83,10 @@ impl TranscriptAssembler {
 	pub fn reset(&mut self) {
 		self.committed.clear();
 		self.drafts.clear();
+
 		self.arrival_seq = 0;
 		self.dirty_order = true;
+
 		self.ordered_committed_ids.clear();
 	}
 
@@ -114,8 +104,10 @@ impl TranscriptAssembler {
 	pub fn committed_text(&mut self) -> String {
 		if self.dirty_order {
 			self.rebuild_order();
+
 			self.dirty_order = false;
 		}
+
 		self.ordered_committed_ids
 			.iter()
 			.filter_map(|item_id| self.committed.get(item_id))
@@ -149,7 +141,9 @@ impl TranscriptAssembler {
 
 	fn bump_seq(&mut self) -> u64 {
 		let current = self.arrival_seq;
+
 		self.arrival_seq += 1;
+
 		current
 	}
 
@@ -164,7 +158,6 @@ impl TranscriptAssembler {
 				.or_default()
 				.push((item_id.clone(), item.seen_seq));
 		}
-
 		for siblings in next_map.values_mut() {
 			siblings.sort_by_key(|(_, seen_seq)| *seen_seq);
 		}
@@ -172,6 +165,7 @@ impl TranscriptAssembler {
 		let mut ordered_ids = Vec::with_capacity(self.committed.len());
 		let mut consumed = HashSet::new();
 		let mut frontier = next_map.remove(&None).unwrap_or_default();
+
 		frontier.sort_by_key(|(_, seen_seq)| *seen_seq);
 
 		for (item_id, _) in frontier {
@@ -182,6 +176,7 @@ impl TranscriptAssembler {
 			.into_iter()
 			.filter_map(|item_id| self.committed.get(&item_id).map(|item| (item.seen_seq, item_id)))
 			.collect();
+
 		remaining.sort_by_key(|(seen_seq, _)| *seen_seq);
 
 		for (_, item_id) in remaining {
@@ -201,9 +196,11 @@ impl TranscriptAssembler {
 		if !consumed.insert(item_id.to_string()) {
 			return;
 		}
+
 		ordered_ids.push(item_id.to_string());
 
 		let next_id = Some(item_id.to_string());
+
 		if let Some(children) = next_map.get(&next_id) {
 			for (child_id, _) in children {
 				self.visit_chain(child_id, next_map, consumed, ordered_ids);
@@ -212,13 +209,27 @@ impl TranscriptAssembler {
 	}
 }
 
+#[derive(Debug, Default)]
+struct CommittedItem {
+	text: String,
+	previous_item_id: Option<String>,
+	seen_seq: u64,
+}
+
+#[derive(Debug, Default)]
+struct DraftItem {
+	text: String,
+	seen_seq: u64,
+}
+
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::transcript::{TranscriptAssembler, TranscriptEvent};
 
 	#[test]
 	fn delta_then_completed_updates_transcript() {
 		let mut assembler = TranscriptAssembler::new();
+
 		assembler.apply(TranscriptEvent::Delta {
 			item_id: "item-1".to_string(),
 			previous_item_id: None,
@@ -244,6 +255,7 @@ mod tests {
 	#[test]
 	fn committed_items_are_ordered_by_previous_chain() {
 		let mut assembler = TranscriptAssembler::new();
+
 		assembler.apply(TranscriptEvent::Completed {
 			item_id: "item-c".to_string(),
 			previous_item_id: Some("item-b".to_string()),
@@ -259,12 +271,14 @@ mod tests {
 			previous_item_id: None,
 			transcript: "a".to_string(),
 		});
+
 		assert_eq!(assembler.committed_text(), "a b c");
 	}
 
 	#[test]
 	fn completed_arrival_does_not_change_latest_draft_id() {
 		let mut assembler = TranscriptAssembler::new();
+
 		assembler.apply(TranscriptEvent::Delta {
 			item_id: "item-2".to_string(),
 			previous_item_id: None,
@@ -275,6 +289,7 @@ mod tests {
 			previous_item_id: None,
 			transcript: "final".to_string(),
 		});
+
 		assert_eq!(assembler.committed_text(), "final");
 		assert_eq!(assembler.draft_text(), "draft");
 	}
@@ -282,6 +297,7 @@ mod tests {
 	#[test]
 	fn completed_chain_uses_previous_item_id_even_with_arrival_reordering() {
 		let mut assembler = TranscriptAssembler::new();
+
 		assembler.apply(TranscriptEvent::Completed {
 			item_id: "item-2".to_string(),
 			previous_item_id: Some("item-1".to_string()),
@@ -297,6 +313,7 @@ mod tests {
 			previous_item_id: Some("item-2".to_string()),
 			transcript: "three".to_string(),
 		});
+
 		assert_eq!(assembler.committed_text(), "one two three");
 	}
 }

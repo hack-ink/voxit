@@ -216,7 +216,6 @@ impl VoxitApp {
 	}
 
 	fn handle_commands(&mut self, ctx: &Context) {
-		self.refresh_auth_status_async();
 		self.handle_auth_events();
 		self.handle_realtime_events();
 		self.handle_inference_events();
@@ -905,8 +904,9 @@ impl VoxitApp {
 				}
 
 				self.status = match mic_state {
-					MicrophonePermissionState::Granted =>
-						format!("{pane_name} permission granted."),
+					MicrophonePermissionState::Granted => {
+						format!("{pane_name} permission granted.")
+					},
 					MicrophonePermissionState::Prompted => format!(
 						"{pane_name} permission prompt shown. Approve it in macOS, then reopen Preferences."
 					),
@@ -916,10 +916,12 @@ impl VoxitApp {
 					MicrophonePermissionState::Denied => format!(
 						"{pane_name} permission denied. Open System Settings > Privacy & Security and enable it."
 					),
-					MicrophonePermissionState::Restricted =>
-						format!("{pane_name} permission is restricted by system policy."),
-					MicrophonePermissionState::Unknown =>
-						format!("{pane_name} permission status is unknown."),
+					MicrophonePermissionState::Restricted => {
+						format!("{pane_name} permission is restricted by system policy.")
+					},
+					MicrophonePermissionState::Unknown => {
+						format!("{pane_name} permission status is unknown.")
+					},
 				};
 
 				self.start_permission_poll_if_needed(PermissionSettingsPane::Microphone);
@@ -1154,6 +1156,10 @@ impl VoxitApp {
 
 	fn show_window(&mut self, ctx: &Context) {
 		self.refresh_permission_checks();
+
+		self.auth_status_refresh_started = false;
+
+		self.refresh_auth_status_async();
 
 		self.is_window_visible = true;
 

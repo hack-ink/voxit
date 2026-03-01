@@ -1,10 +1,26 @@
 //! Realtime transcription session helpers for Pass1 streaming.
 
-use std::{fmt, sync::mpsc, thread};
+#[cfg(all(target_os = "macos", feature = "voxit-realtime"))] use std::time::Duration;
+use std::{
+	fmt::{Display, Formatter},
+	sync::{
+		mpsc,
+		mpsc::{Receiver, Sender},
+	},
+	thread::{self, JoinHandle},
+};
 
+#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
+use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::Value;
+#[cfg(all(target_os = "macos", feature = "voxit-realtime"))] use tokio::runtime::Runtime;
+#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
+use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::transcript::TranscriptEvent;
+use voxit_audio::AudioChunk;
+
+type ParsedFrame = (String, Option<String>, String, bool);
 
 /// Realtime websocket endpoint for audio transcription.
 pub const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime";
@@ -19,7 +35,6 @@ pub struct RealtimeSessionConfig {
 	/// `near_field` | `far_field` | `off`.
 	pub noise_reduction: String,
 }
-
 impl Default for RealtimeSessionConfig {
 	/// Default session configuration for English pass1 streaming.
 	fn default() -> Self {
@@ -27,6 +42,24 @@ impl Default for RealtimeSessionConfig {
 			model: "gpt-4o-mini-transcribe".to_string(),
 			sample_rate_hz: 24_000,
 			noise_reduction: "near_field".to_string(),
+		}
+	}
+}
+
+/// Handle returned to callers so stop signal can be sent.
+#[derive(Debug)]
+pub struct RealtimeSession {
+	stop_tx: Option<Sender<()>>,
+	worker: Option<JoinHandle<()>>,
+}
+impl RealtimeSession {
+	/// Stop a running session.
+	pub fn stop(self) {
+		if let Some(stop_tx) = self.stop_tx {
+			let _ = stop_tx.send(());
+		}
+		if let Some(worker) = self.worker {
+			let _ = worker.join();
 		}
 	}
 }
@@ -57,35 +90,13 @@ pub enum RealtimeError {
 		reason: String,
 	},
 }
-
-impl fmt::Display for RealtimeError {
+impl Display for RealtimeError {
 	/// Format error to string.
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 		match self {
 			#[cfg(not(all(target_os = "macos", feature = "voxit-realtime")))]
 			Self::DependencyUnavailable { reason } => write!(f, "{reason}"),
 			Self::RuntimeError { reason } => write!(f, "{reason}"),
-		}
-	}
-}
-
-/// Handle returned to callers so stop signal can be sent.
-#[derive(Debug)]
-pub struct RealtimeSession {
-	stop_tx: Option<mpsc::Sender<()>>,
-	worker: Option<thread::JoinHandle<()>>,
-}
-
-type ParsedFrame = (String, Option<String>, String, bool);
-
-impl RealtimeSession {
-	/// Stop a running session.
-	pub fn stop(self) {
-		if let Some(stop_tx) = self.stop_tx {
-			let _ = stop_tx.send(());
-		}
-		if let Some(worker) = self.worker {
-			let _ = worker.join();
 		}
 	}
 }
@@ -96,8 +107,8 @@ pub fn start_realtime_session(
 	api_key: String,
 	account_id: Option<String>,
 	config: RealtimeSessionConfig,
-	chunk_tx: mpsc::Receiver<voxit_audio::AudioChunk>,
-	event_tx: mpsc::Sender<RealtimeEvent>,
+	chunk_tx: Receiver<AudioChunk>,
+	event_tx: Sender<RealtimeEvent>,
 ) -> Result<RealtimeSession, RealtimeError> {
 	start_realtime_session_impl(api_key, account_id, config, chunk_tx, event_tx)
 }
@@ -108,14 +119,15 @@ pub fn start_realtime_session(
 	api_key: String,
 	account_id: Option<String>,
 	config: RealtimeSessionConfig,
-	chunk_tx: mpsc::Receiver<voxit_audio::AudioChunk>,
-	event_tx: mpsc::Sender<RealtimeEvent>,
+	chunk_tx: Receiver<AudioChunk>,
+	event_tx: Sender<RealtimeEvent>,
 ) -> Result<RealtimeSession, RealtimeError> {
 	let _ = api_key;
 	let _ = account_id;
 	let _ = config;
 	let _ = chunk_tx;
 	let _ = event_tx;
+
 	Err(RealtimeError::DependencyUnavailable {
 		reason: "realtime websocket feature is not enabled at compile time".to_string(),
 	})
@@ -126,8 +138,8 @@ fn start_realtime_session_impl(
 	api_key: String,
 	account_id: Option<String>,
 	config: RealtimeSessionConfig,
-	chunk_rx: mpsc::Receiver<voxit_audio::AudioChunk>,
-	event_tx: mpsc::Sender<RealtimeEvent>,
+	chunk_rx: Receiver<AudioChunk>,
+	event_tx: Sender<RealtimeEvent>,
 ) -> Result<RealtimeSession, RealtimeError> {
 	let (stop_tx, stop_rx) = mpsc::channel::<()>();
 	let worker = thread::spawn(move || {
@@ -142,19 +154,10 @@ fn run_realtime_worker(
 	api_key: String,
 	account_id: Option<String>,
 	config: RealtimeSessionConfig,
-	chunk_rx: mpsc::Receiver<voxit_audio::AudioChunk>,
-	event_tx: mpsc::Sender<RealtimeEvent>,
-	stop_rx: mpsc::Receiver<()>,
+	chunk_rx: Receiver<AudioChunk>,
+	event_tx: Sender<RealtimeEvent>,
+	stop_rx: Receiver<()>,
 ) -> Result<(), RealtimeError> {
-	use futures_util::{SinkExt, StreamExt};
-	use serde_json::json;
-	use std::time::Duration;
-	use tokio::{
-		runtime::Runtime,
-		time::{sleep, timeout},
-	};
-	use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-
 	let rt = Runtime::new().map_err(|err| RealtimeError::RuntimeError {
 		reason: format!("failed to create tokio runtime: {err}"),
 	})?;
@@ -166,18 +169,19 @@ fn run_realtime_worker(
 			.uri(endpoint)
 			.header("Authorization", format!("Bearer {api_key}"))
 			.header("OpenAI-Beta", "realtime=v1");
+
 		if let Some(account_id) = account_id.as_deref() {
 			builder = builder.header("ChatGPT-Account-ID", account_id);
 		}
+
 		let request = builder.body(()).map_err(|err| RealtimeError::RuntimeError {
 			reason: format!("invalid realtime request: {err}"),
 		})?;
-
-		let session_update = json!({
-			"type": "session.update",
-			"session": {
-				"audio": {
-					"input": {
+		let session_update = serde_json::json!({
+				"type": "session.update",
+				"session": {
+					"audio": {
+						"input": {
 						"format": {
 							"type": "audio/pcm",
 							"rate": config.sample_rate_hz,
@@ -189,11 +193,12 @@ fn run_realtime_worker(
 				},
 			}
 		});
-
-		let (mut ws, _) =
-			connect_async(request).await.map_err(|err| RealtimeError::RuntimeError {
+		let (mut ws, _) = tokio_tungstenite::connect_async(request).await.map_err(|err| {
+			RealtimeError::RuntimeError {
 				reason: format!("realtime websocket connect failed: {err}"),
-			})?;
+			}
+		})?;
+
 		ws.send(Message::Text(session_update.to_string().into())).await.map_err(|err| {
 			RealtimeError::RuntimeError { reason: format!("failed to configure session: {err}") }
 		})?;
@@ -204,26 +209,29 @@ fn run_realtime_worker(
 			}
 
 			if let Ok(chunk) = chunk_rx.try_recv() {
-				let payload = json!({
+				let payload = serde_json::json!({
 					"type": "input_audio_buffer.append",
 					"audio": chunk_to_base64(&chunk),
 				});
+
 				ws.send(Message::Text(payload.to_string().into())).await.map_err(|err| {
 					RealtimeError::RuntimeError {
 						reason: format!("send audio chunk failed: {err}"),
 					}
 				})?;
 			} else {
-				let _ = sleep(Duration::from_millis(5)).await;
+				let _ = tokio::time::sleep(Duration::from_millis(5)).await;
 			}
 
-			let response = timeout(Duration::from_millis(10), ws.next()).await;
+			let response = tokio::time::timeout(Duration::from_millis(10), ws.next()).await;
+
 			if let Ok(Some(next)) = response {
 				match next {
 					Err(err) => {
 						let _ = event_tx.send(RealtimeEvent::StreamError(format!(
 							"realtime stream receive failed: {err}"
 						)));
+
 						break;
 					},
 					Ok(msg) => match msg {
@@ -259,8 +267,10 @@ fn run_realtime_worker(
 		}
 
 		let _ = ws.close(None).await;
+
 		Ok(())
 	})?;
+
 	Ok(())
 }
 
@@ -268,9 +278,11 @@ fn chunk_to_base64(samples: &[i16]) -> String {
 	use base64::{Engine, engine::general_purpose::STANDARD};
 
 	let mut bytes = Vec::with_capacity(samples.len() * 2);
+
 	for sample in samples {
 		bytes.extend_from_slice(&sample.to_le_bytes());
 	}
+
 	STANDARD.encode(bytes)
 }
 
@@ -279,6 +291,7 @@ fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError
 		reason: format!("invalid realtime frame json: {err}"),
 	})?;
 	let event_type = value.get("type").and_then(Value::as_str);
+
 	match event_type {
 		Some("conversation.item.input_audio_transcription.delta") => {
 			let item_id =
@@ -295,6 +308,7 @@ fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError
 				.and_then(Value::as_str)
 				.unwrap_or_default()
 				.to_string();
+
 			Ok(Some((item_id, previous_item_id, delta, false)))
 		},
 		Some("conversation.item.input_audio_transcription.completed") => {
@@ -312,6 +326,7 @@ fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError
 				.or_else(|| value.get("text").and_then(Value::as_str))
 				.unwrap_or_default()
 				.to_string();
+
 			Ok(Some((item_id, previous_item_id, transcript, true)))
 		},
 		_ => Ok(None),
@@ -320,13 +335,14 @@ fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::realtime::{RealtimeSessionConfig, chunk_to_base64, parse_realtime_frame};
 
 	#[test]
 	fn parses_delta_and_completed_realtime_frames() {
 		let delta = r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item-1","delta":"hello"}"#;
 		let parsed = parse_realtime_frame(delta).expect("parse delta");
 		let (item_id, previous_item_id, transcript, is_final) = parsed.expect("delta should parse");
+
 		assert_eq!(item_id, "item-1");
 		assert_eq!(previous_item_id, None);
 		assert_eq!(transcript, "hello");
@@ -336,6 +352,7 @@ mod tests {
 		let (item_id, previous_item_id, transcript, is_final) = parse_realtime_frame(completed)
 			.expect("parse completed")
 			.expect("completed should parse");
+
 		assert_eq!(item_id, "item-1");
 		assert_eq!(previous_item_id, None);
 		assert_eq!(transcript, "hello");
@@ -344,14 +361,16 @@ mod tests {
 
 	#[test]
 	fn chunk_encode_is_deterministic() {
-		let chunk = vec![1, -2, 30000];
+		let chunk = vec![1, -2, 30_000];
 		let encoded = chunk_to_base64(&chunk);
+
 		assert!(!encoded.is_empty());
 	}
 
 	#[test]
 	fn default_session_config_is_expected_shape() {
 		let config = RealtimeSessionConfig::default();
+
 		assert!(config.model.contains("gpt"));
 		assert_eq!(config.sample_rate_hz, 24_000);
 	}
