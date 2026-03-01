@@ -154,29 +154,3 @@ dependencies = [
 	"fmt-check",
 ]
 
-
-# Compatibility aliases
-#
-# `cargo-make` ships built-in `check-format*` tasks that run `cargo fmt -- --check`
-# on the default toolchain. This repo intentionally uses nightly rustfmt options
-# (see `.rustfmt.toml`), so stable rustfmt will disagree and fail with diffs.
-# Override these task names to route through our nightly-based format checks.
-
-[tasks.check-format]
-clear = true
-workspace = false
-script = "cargo +nightly fmt --all -- --check"
-
-[tasks.check-format-flow]
-clear = true
-workspace = false
-dependencies = [
-	"check-format",
-]
-
-[tasks.check-format-ci-flow]
-clear = true
-workspace = false
-dependencies = [
-	"check-format",
-]
