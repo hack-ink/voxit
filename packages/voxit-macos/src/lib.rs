@@ -8,7 +8,6 @@ use std::{ffi::c_void, time::Duration};
 #[cfg(target_os = "macos")] use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-#[cfg(target_os = "macos")] use objc2_foundation::NSString;
 
 #[cfg(target_os = "macos")]
 type CfBoolean = u8;
@@ -148,13 +147,14 @@ pub fn request_permission(_pane: PermissionSettingsPane) -> bool {
 #[cfg(target_os = "macos")]
 pub fn microphone_permission_state() -> MicrophonePermissionState {
 	let media_type_audio = unsafe { AVMediaTypeAudio };
-	let status = if let Some(audio_media_type) = media_type_audio {
-		unsafe { AVCaptureDevice::authorizationStatusForMediaType(audio_media_type) }
-	} else {
-		let fallback_media_type = NSString::from_str("soun");
+	let Some(audio_media_type) = media_type_audio else {
+		tracing::warn!(
+			"AVMediaTypeAudio symbol is unavailable; microphone permission state unknown"
+		);
 
-		unsafe { AVCaptureDevice::authorizationStatusForMediaType(fallback_media_type.as_ref()) }
+		return MicrophonePermissionState::Unknown;
 	};
+	let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(audio_media_type) };
 
 	match status {
 		AVAuthorizationStatus::Authorized => MicrophonePermissionState::Granted,
@@ -178,29 +178,24 @@ pub fn microphone_permission_state() -> MicrophonePermissionState {
 pub fn request_microphone_permission() -> MicrophonePermissionState {
 	let status = microphone_permission_state();
 
+	tracing::info!(?status, "microphone permission request invoked");
+
 	if !matches!(status, MicrophonePermissionState::NotDetermined) {
 		return status;
 	}
 
 	let callback = RcBlock::new(|_| {});
 	let media_type_audio = unsafe { AVMediaTypeAudio };
+	let Some(audio_media_type) = media_type_audio else {
+		tracing::warn!(
+			"AVMediaTypeAudio symbol is unavailable; skipping microphone prompt request"
+		);
 
-	if let Some(audio_media_type) = media_type_audio {
-		unsafe {
-			AVCaptureDevice::requestAccessForMediaType_completionHandler(
-				audio_media_type,
-				&callback,
-			);
-		}
-	} else {
-		let fallback_media_type = NSString::from_str("soun");
+		return MicrophonePermissionState::Unknown;
+	};
 
-		unsafe {
-			AVCaptureDevice::requestAccessForMediaType_completionHandler(
-				fallback_media_type.as_ref(),
-				&callback,
-			);
-		}
+	unsafe {
+		AVCaptureDevice::requestAccessForMediaType_completionHandler(audio_media_type, &callback);
 	}
 
 	// `requestAccessForMediaType:completionHandler:` completes asynchronously and invokes the
@@ -392,9 +387,13 @@ fn has_accessibility_permission() -> bool {
 
 #[cfg(target_os = "macos")]
 fn request_accessibility_permission() -> bool {
+	tracing::info!("accessibility permission request invoked");
+
 	let options = accessibility_request_options();
 
 	if options.is_null() {
+		tracing::warn!("accessibility request options unavailable");
+
 		return false;
 	}
 
@@ -415,6 +414,8 @@ fn has_input_monitoring_permission() -> bool {
 
 #[cfg(target_os = "macos")]
 fn request_input_monitoring_permission() -> bool {
+	tracing::info!("input monitoring permission request invoked");
+
 	let requested = unsafe { CGRequestListenEventAccess() != 0 };
 
 	requested || has_input_monitoring_permission()
