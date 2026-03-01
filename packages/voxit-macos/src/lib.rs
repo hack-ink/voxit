@@ -10,13 +10,9 @@ use std::{ffi::c_void, time::Duration};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 
 #[cfg(target_os = "macos")]
-type CfBoolean = u8;
-#[cfg(target_os = "macos")]
 type CfDictionaryRef = *const c_void;
 #[cfg(target_os = "macos")]
 type CfTypeRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CfIndex = isize;
 
 /// Captured frontmost application metadata.
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
