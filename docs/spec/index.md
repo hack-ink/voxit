@@ -9,6 +9,7 @@ Audience: This documentation is written for LLM consumption and should remain ex
 - Store specs directly under `docs/spec/` (flat structure).
 - Use descriptive file names with stable prefixes (`system_`, `t0_`, `t1_`, `trace_`, `search_`).
 - Link new specs from `docs/index.md` or `docs/guide/index.md` when relevant.
+- Canonical V1 normative spec: `docs/spec/system_voxit_v1.md`.
 
 ## Authoring guidance (LLM-first)
 

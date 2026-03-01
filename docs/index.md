@@ -17,6 +17,7 @@ Purpose: Provide the canonical entry point and reading order for repository docu
 - Location: `docs/spec/` (flat structure).
 - Use for: System contracts, data models, pipeline behavior, and required invariants.
 - Entry point: `docs/spec/index.md`.
+- Normative V1 app contract: `docs/spec/system_voxit_v1.md` (macOS-only).
 
 ### Operational and pipeline docs (implementation guides)
 
