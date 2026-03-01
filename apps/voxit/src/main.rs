@@ -41,7 +41,7 @@ use tray_icon::{
 use crate::prelude::Result;
 use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{
-	auth::{self, AuthRecord},
+	auth::{self, AuthRecord, AuthStatus},
 	config::Config,
 	openai, realtime,
 	transcript::TranscriptAssembler,
@@ -102,6 +102,7 @@ enum AppCommand {
 #[derive(Debug)]
 enum AuthEvent {
 	SignedIn(AuthRecord),
+	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
 	Status(String),
 	Failed(String),
@@ -317,17 +318,12 @@ impl VoxitApp {
 
 		self.auth_status_refresh_started = true;
 
-		let status = auth::status();
+		let tx = self.auth_event_tx.clone();
 
-		self.auth_busy = false;
-		self.auth_signed_in = status.signed_in;
-		self.auth_status = if status.signed_in {
-			status
-				.account_id
-				.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
-		} else {
-			"Not signed in".to_string()
-		};
+		thread::spawn(move || {
+			let status = auth::status();
+			let _ = tx.send(AuthEvent::StatusChecked(status));
+		});
 	}
 
 	fn handle_auth_events(&mut self) {
@@ -341,6 +337,18 @@ impl VoxitApp {
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
+				},
+				AuthEvent::StatusChecked(status) => {
+					self.auth_busy = false;
+					self.auth_signed_in = status.signed_in;
+					self.auth_status = if status.signed_in {
+						status.account_id.map_or_else(
+							|| "Signed in".to_string(),
+							|id| format!("Signed in: {id}"),
+						)
+					} else {
+						"Not signed in".to_string()
+					};
 				},
 				AuthEvent::DeviceCodeInfo { user_code, verification_uri } => {
 					self.device_code_user_code = Some(user_code);
@@ -1157,14 +1165,14 @@ impl VoxitApp {
 	fn show_window(&mut self, ctx: &Context) {
 		self.refresh_permission_checks();
 
-		self.auth_status_refresh_started = false;
-
-		self.refresh_auth_status_async();
-
 		self.is_window_visible = true;
 
 		ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
 		ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+
+		self.auth_status_refresh_started = false;
+		self.auth_busy = true;
+		self.auth_status = "Checking auth...".to_string();
 	}
 
 	fn quit_app(&mut self, ctx: &Context) {
