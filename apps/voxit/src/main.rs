@@ -216,6 +216,10 @@ impl VoxitApp {
 	}
 
 	fn handle_commands(&mut self, ctx: &Context) {
+		if self.is_window_visible {
+			self.refresh_auth_status_async();
+		}
+
 		self.handle_auth_events();
 		self.handle_realtime_events();
 		self.handle_inference_events();
