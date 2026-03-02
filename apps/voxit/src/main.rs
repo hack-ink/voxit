@@ -41,7 +41,7 @@ use tray_icon::{
 use crate::prelude::Result;
 use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{
-	auth::{self, AuthRecord, AuthStatus},
+	auth::{self, AuthRecord},
 	config::Config,
 	openai, realtime,
 	transcript::TranscriptAssembler,
@@ -102,7 +102,6 @@ enum AppCommand {
 #[derive(Debug)]
 enum AuthEvent {
 	SignedIn(AuthRecord),
-	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
 	Status(String),
 	Failed(String),
@@ -220,10 +219,6 @@ impl VoxitApp {
 	}
 
 	fn handle_commands(&mut self, ctx: &Context) {
-		if self.is_window_visible {
-			self.refresh_auth_status_async();
-		}
-
 		self.handle_auth_events();
 		self.handle_realtime_events();
 		self.handle_inference_events();
@@ -236,6 +231,10 @@ impl VoxitApp {
 				AppCommand::ShowWindow => self.show_window(ctx),
 				AppCommand::Quit => self.quit_app(ctx),
 			}
+		}
+
+		if self.is_window_visible {
+			self.refresh_auth_status_if_needed();
 		}
 	}
 
@@ -311,19 +310,37 @@ impl VoxitApp {
 		}
 	}
 
-	fn refresh_auth_status_async(&mut self) {
+	fn refresh_auth_status_if_needed(&mut self) {
 		if self.auth_status_refresh_started {
 			return;
 		}
 
 		self.auth_status_refresh_started = true;
+		self.auth_busy = true;
+		self.auth_status = "Checking auth...".to_string();
 
-		let tx = self.auth_event_tx.clone();
+		let started = Instant::now();
+		let status = std::panic::catch_unwind(auth::status).unwrap_or_else(|_| {
+			tracing::error!("auth status check panicked");
 
-		thread::spawn(move || {
-			let status = auth::status();
-			let _ = tx.send(AuthEvent::StatusChecked(status));
+			voxit_core::auth::AuthStatus { signed_in: false, account_id: None }
 		});
+
+		tracing::info!(
+			elapsed_ms = started.elapsed().as_millis(),
+			signed_in = status.signed_in,
+			"auth status check finished"
+		);
+
+		self.auth_busy = false;
+		self.auth_signed_in = status.signed_in;
+		self.auth_status = if status.signed_in {
+			status
+				.account_id
+				.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
+		} else {
+			"Not signed in".to_string()
+		};
 	}
 
 	fn handle_auth_events(&mut self) {
@@ -337,18 +354,6 @@ impl VoxitApp {
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
-				},
-				AuthEvent::StatusChecked(status) => {
-					self.auth_busy = false;
-					self.auth_signed_in = status.signed_in;
-					self.auth_status = if status.signed_in {
-						status.account_id.map_or_else(
-							|| "Signed in".to_string(),
-							|id| format!("Signed in: {id}"),
-						)
-					} else {
-						"Not signed in".to_string()
-					};
 				},
 				AuthEvent::DeviceCodeInfo { user_code, verification_uri } => {
 					self.device_code_user_code = Some(user_code);
