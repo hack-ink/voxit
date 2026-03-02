@@ -5,7 +5,7 @@ use std::{
 	fs::{self, File, OpenOptions},
 	io::{self, Read as _, Write as _},
 	path::{Path, PathBuf},
-	sync::{Condvar, Mutex, OnceLock, RwLock, mpsc},
+	sync::{Condvar, Mutex, OnceLock, RwLock},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -35,7 +35,6 @@ const AUTH_FILE_FALLBACK_ENV: &str = "VOXIT_AUTH_FILE_FALLBACK";
 const KEYRING_VERIFY_ENABLED_ENV: &str = "VOXIT_VERIFY_KEYRING";
 const KEYRING_VERIFY_ATTEMPTS: usize = 5;
 const KEYRING_VERIFY_DELAY_MS: u64 = 120;
-const STORED_AUTH_LOAD_TIMEOUT_SECS: u64 = 3;
 #[cfg(test)]
 const TEST_FORCE_KEYRING_ERROR_ENV: &str = "VOXIT_TEST_FORCE_KEYRING_ERROR";
 
@@ -463,7 +462,6 @@ fn stored_auth_cache() -> &'static (Mutex<StoredAuthCacheState>, Condvar) {
 }
 
 fn load_stored_auth_tokens() -> AuthResult<Option<TokenData>> {
-	let timeout = Duration::from_secs(STORED_AUTH_LOAD_TIMEOUT_SECS);
 	let (cache_lock, cache_cv) = stored_auth_cache();
 	let mut state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
 
@@ -496,21 +494,7 @@ fn load_stored_auth_tokens() -> AuthResult<Option<TokenData>> {
 		if state.loading {
 			tracing::debug!("waiting for in-flight stored-auth load");
 
-			let (next_state, wait_result) =
-				cache_cv.wait_timeout(state, timeout).unwrap_or_else(|err| err.into_inner());
-
-			state = next_state;
-
-			if wait_result.timed_out() {
-				tracing::warn!("stored auth read timed out waiting for in-flight load");
-
-				state.loading = false;
-				state.result = None;
-
-				cache_cv.notify_all();
-
-				return Err(String::from("stored auth read timed out"));
-			}
+			state = cache_cv.wait(state).unwrap_or_else(|err| err.into_inner());
 
 			continue;
 		}
@@ -521,19 +505,7 @@ fn load_stored_auth_tokens() -> AuthResult<Option<TokenData>> {
 
 		tracing::debug!("stored auth cache miss, reading keyring/fallback");
 
-		let (tx, rx) = mpsc::channel();
-
-		thread::spawn(move || {
-			let loaded = load_stored_auth().and_then(valid_tokens_or_none);
-			let _ = tx.send(loaded);
-		});
-
-		let loaded = match rx.recv_timeout(timeout) {
-			Ok(result) => result,
-			Err(mpsc::RecvTimeoutError::Timeout) => Err(String::from("stored auth read timed out")),
-			Err(mpsc::RecvTimeoutError::Disconnected) =>
-				Err(String::from("stored auth read worker exited unexpectedly")),
-		};
+		let loaded = load_stored_auth().and_then(valid_tokens_or_none);
 
 		state = cache_lock.lock().unwrap_or_else(|err| err.into_inner());
 		state.loading = false;
