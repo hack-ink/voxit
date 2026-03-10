@@ -30,4 +30,4 @@ tokio-tungstenite = { version = "0.28", default-features = false, features = ["c
 tracing           = { version = "0.1" }
 url               = { version = "2.5" }
 voxit-audio       = { path = "../voxit-audio" }
-webbrowser        = { version = "1.1" }
+webbrowser        = { version = "1.2" }
