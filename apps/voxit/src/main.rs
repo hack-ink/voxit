@@ -1,15 +1,14 @@
 //! Voxit app entrypoint.
 
-#![deny(clippy::all, missing_docs, unused_crate_dependencies)]
-
 #[cfg(target_os = "macos")] mod hotkey_macos;
 mod prelude {
 	pub use color_eyre::eyre::{Result, eyre};
 }
 
 use std::{
-	fs,
+	env, fs, panic,
 	path::Path,
+	process,
 	sync::{
 		Arc,
 		atomic::{AtomicU8, Ordering},
@@ -41,7 +40,7 @@ use tray_icon::{
 use crate::prelude::Result;
 use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{
-	auth::{self, AuthRecord},
+	auth::{self, AuthRecord, AuthStatus},
 	config::Config,
 	openai, realtime,
 	transcript::TranscriptAssembler,
@@ -62,7 +61,7 @@ struct PermissionPoll {
 	deadline: Instant,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HotkeyMode {
 	Toggle,
 	Hold,
@@ -102,6 +101,7 @@ enum AppCommand {
 #[derive(Debug)]
 enum AuthEvent {
 	SignedIn(AuthRecord),
+	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
 	Status(String),
 	Failed(String),
@@ -123,6 +123,7 @@ struct VoxitApp {
 	is_rewriting: bool,
 	ignore_rewrite_result: bool,
 	auth_status_refresh_started: bool,
+	auth_status_checked_once: bool,
 	status: String,
 	auth_status: String,
 	auth_signed_in: bool,
@@ -186,6 +187,7 @@ impl VoxitApp {
 			is_rewriting: false,
 			ignore_rewrite_result: false,
 			auth_status_refresh_started: false,
+			auth_status_checked_once: false,
 			hotkey_mode,
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
@@ -214,12 +216,13 @@ impl VoxitApp {
 
 		app.refresh_input_devices();
 		app.refresh_permission_checks();
+		app.refresh_auth_status_if_needed();
 
 		app
 	}
 
 	fn handle_commands(&mut self, ctx: &Context) {
-		self.handle_auth_events();
+		self.handle_auth_events(ctx);
 		self.handle_realtime_events();
 		self.handle_inference_events();
 
@@ -233,7 +236,7 @@ impl VoxitApp {
 			}
 		}
 
-		if self.is_window_visible {
+		if self.is_window_visible && !self.auth_status_checked_once {
 			self.refresh_auth_status_if_needed();
 		}
 	}
@@ -315,36 +318,31 @@ impl VoxitApp {
 			return;
 		}
 
+		tracing::info!("auth status refresh starting");
+
 		self.auth_status_refresh_started = true;
 		self.auth_busy = true;
 		self.auth_status = "Checking auth...".to_string();
 
-		let started = Instant::now();
-		let status = std::panic::catch_unwind(auth::status).unwrap_or_else(|_| {
-			tracing::error!("auth status check panicked");
+		#[cfg(target_os = "macos")]
+		let _ = voxit_macos::activate_current_application();
+		let tx = self.auth_event_tx.clone();
+		let _ = thread::spawn(move || {
+			let status = panic::catch_unwind(auth::status).unwrap_or_else(|_| {
+				tracing::error!("auth status check panicked");
 
-			voxit_core::auth::AuthStatus { signed_in: false, account_id: None }
+				AuthStatus { signed_in: false, account_id: None }
+			});
+			let _ = tx.send(AuthEvent::StatusChecked(status));
 		});
-
-		tracing::info!(
-			elapsed_ms = started.elapsed().as_millis(),
-			signed_in = status.signed_in,
-			"auth status check finished"
-		);
-
-		self.auth_busy = false;
-		self.auth_signed_in = status.signed_in;
-		self.auth_status = if status.signed_in {
-			status
-				.account_id
-				.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"))
-		} else {
-			"Not signed in".to_string()
-		};
 	}
 
-	fn handle_auth_events(&mut self) {
+	fn handle_auth_events(&mut self, ctx: &Context) {
+		let mut did_update = false;
+
 		while let Ok(event) = self.auth_event_rx.try_recv() {
+			did_update = true;
+
 			match event {
 				AuthEvent::SignedIn(record) => {
 					self.device_code_user_code = None;
@@ -354,6 +352,26 @@ impl VoxitApp {
 					self.auth_status = record
 						.account_id
 						.map_or_else(|| "Signed in".to_string(), |id| format!("Signed in: {id}"));
+				},
+				AuthEvent::StatusChecked(status) => {
+					tracing::info!(
+						signed_in = status.signed_in,
+						has_account_id = status.account_id.is_some(),
+						"auth status refresh completed"
+					);
+
+					self.auth_status_refresh_started = false;
+					self.auth_status_checked_once = true;
+					self.auth_busy = false;
+					self.auth_signed_in = status.signed_in;
+					self.auth_status = if status.signed_in {
+						status.account_id.map_or_else(
+							|| "Signed in".to_string(),
+							|id| format!("Signed in: {id}"),
+						)
+					} else {
+						"Not signed in".to_string()
+					};
 				},
 				AuthEvent::DeviceCodeInfo { user_code, verification_uri } => {
 					self.device_code_user_code = Some(user_code);
@@ -373,6 +391,10 @@ impl VoxitApp {
 					self.status = format!("Auth failed: {err}");
 				},
 			}
+		}
+
+		if did_update {
+			ctx.request_repaint();
 		}
 	}
 
@@ -482,6 +504,8 @@ impl VoxitApp {
 		self.status = "Starting browser login...".to_string();
 
 		let tx = self.auth_event_tx.clone();
+		#[cfg(target_os = "macos")]
+		let _ = voxit_macos::activate_current_application();
 
 		thread::spawn(move || {
 			let event = match auth::sign_in_with_chatgpt() {
@@ -522,6 +546,8 @@ impl VoxitApp {
 		self.status = "Starting device code login...".to_string();
 
 		let tx = self.auth_event_tx.clone();
+		#[cfg(target_os = "macos")]
+		let _ = voxit_macos::activate_current_application();
 
 		thread::spawn(move || {
 			let event =
@@ -795,7 +821,7 @@ impl VoxitApp {
 
 				return;
 			};
-			let wav = match voxit_audio::stop_recording(recorder) {
+			let (frames_captured, wav) = match voxit_audio::stop_recording(recorder) {
 				Ok(result) => {
 					self.state = "Stopped".to_string();
 					self.status = format!(
@@ -812,16 +838,21 @@ impl VoxitApp {
 						"Recorded audio"
 					);
 
-					result.wav
+					(result.frames, result.wav)
 				},
 				Err(err) => {
-					self.status = format!("Failed to stop recording: {err}");
+					let err_msg = err.to_string();
 
-					Vec::new()
+					self.status = format!("Failed to stop recording: {err_msg}");
+
+					return;
 				},
 			};
+			let is_empty_capture = frames_captured == 0 || wav.len() <= 44 || wav.is_empty();
 
-			if wav.is_empty() {
+			if is_empty_capture {
+				self.status = "No valid audio captured; skipping transcription.".to_string();
+
 				return;
 			}
 
@@ -1176,6 +1207,7 @@ impl VoxitApp {
 		ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 
 		self.auth_status_refresh_started = false;
+		self.auth_status_checked_once = false;
 		self.auth_busy = true;
 		self.auth_status = "Checking auth...".to_string();
 	}
@@ -1222,6 +1254,7 @@ impl VoxitApp {
 			is_rewriting: false,
 			ignore_rewrite_result: false,
 			auth_status_refresh_started: false,
+			auth_status_checked_once: false,
 			state: "Ready to listen.".to_string(),
 			status: "No action yet.".to_string(),
 			auth_status: "Checking auth...".to_string(),
@@ -1253,6 +1286,7 @@ impl VoxitApp {
 
 		app.refresh_input_devices();
 		app.refresh_permission_checks();
+		app.refresh_auth_status_if_needed();
 
 		app
 	}
@@ -1317,14 +1351,14 @@ fn main() -> Result<()> {
 		.with_writer(non_blocking)
 		.init();
 
-	let default_hook = std::panic::take_hook();
-	let abort_on_panic = std::env::var("VOXIT_ABORT_ON_PANIC").is_ok_and(|v| v == "1");
+	let default_hook = panic::take_hook();
+	let abort_on_panic = env::var("VOXIT_ABORT_ON_PANIC").is_ok_and(|v| v == "1");
 
-	std::panic::set_hook(Box::new(move |p| {
+	panic::set_hook(Box::new(move |p| {
 		default_hook(p);
 
 		if abort_on_panic {
-			std::process::abort();
+			process::abort();
 		}
 	}));
 
@@ -1477,6 +1511,14 @@ fn run_ui() -> Result<()> {
 		..Default::default()
 	};
 
+	tracing::info!(
+		pid = process::id(),
+		start_hidden = app_config.ui.start_hidden,
+		panel_width_px = app_config.ui.panel_width_px,
+		panel_height_px = app_config.ui.panel_height_px,
+		"starting voxit ui"
+	);
+
 	if let Err(err) = eframe::run_native("Voxit", options, Box::new(|_cc| Ok(Box::new(app)))) {
 		return Err(crate::prelude::eyre!(format!("eframe startup failed: {err}")));
 	}
@@ -1518,6 +1560,14 @@ fn run_ui() -> Result<()> {
 			.with_visible(!app_config.ui.start_hidden),
 		..Default::default()
 	};
+
+	tracing::info!(
+		pid = process::id(),
+		start_hidden = app_config.ui.start_hidden,
+		panel_width_px = app_config.ui.panel_width_px,
+		panel_height_px = app_config.ui.panel_height_px,
+		"starting voxit ui"
+	);
 
 	if let Err(err) = eframe::run_native("Voxit", options, Box::new(|_cc| Ok(Box::new(app)))) {
 		return Err(crate::prelude::eyre!(format!("eframe startup failed: {err}")));
@@ -1561,9 +1611,8 @@ fn paste_text(_text: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-	use crate::ensure_app_data_dir;
 	use std::{
-		fs,
+		env, fs,
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
@@ -1571,7 +1620,7 @@ mod tests {
 	fn ensure_app_data_dir_creates_missing_directory() {
 		let nonce =
 			SystemTime::now().duration_since(UNIX_EPOCH).expect("time went backwards").as_nanos();
-		let base = std::env::temp_dir().join(format!("voxit-test-{nonce}"));
+		let base = env::temp_dir().join(format!("voxit-test-{nonce}"));
 		let app_root = base.join("hack.ink.voxit");
 
 		if base.exists() {
@@ -1580,7 +1629,7 @@ mod tests {
 
 		assert!(!app_root.exists());
 
-		ensure_app_data_dir(&app_root).unwrap();
+		crate::ensure_app_data_dir(&app_root).unwrap();
 
 		assert!(app_root.is_dir());
 

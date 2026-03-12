@@ -14,5 +14,5 @@ tracing = { version = "0.1" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2              = "0.6.2"
+objc2-app-kit       = { version = "0.3.2", default-features = false, features = ["NSRunningApplication"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
-objc2-foundation    = { version = "0.3.2", default-features = false, features = ["NSString"] }
