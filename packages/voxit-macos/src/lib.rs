@@ -3,9 +3,11 @@
 #[cfg(not(target_os = "macos"))] use std::io;
 #[cfg(target_os = "macos")] use std::process::Command;
 #[cfg(target_os = "macos")] use std::ptr;
-use std::{ffi::c_void, time::Duration};
+use std::{ffi::c_void, mem, thread, time::Duration};
 
 #[cfg(target_os = "macos")] use block2::RcBlock;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 #[cfg(target_os = "macos")]
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 
@@ -15,7 +17,7 @@ type CfDictionaryRef = *const c_void;
 type CfTypeRef = *const c_void;
 
 /// Captured frontmost application metadata.
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TargetApp {
 	/// Process identifier reported by macOS.
 	pub pid: Option<u32>,
@@ -42,7 +44,7 @@ impl TargetApp {
 		"unknown".to_string()
 	}
 
-	fn matches(&self, other: &TargetApp) -> bool {
+	fn matches(&self, other: &Self) -> bool {
 		if self.is_empty() || other.is_empty() {
 			return false;
 		}
@@ -87,6 +89,7 @@ impl PermissionSettingsPane {
 	}
 }
 
+/// Current microphone authorization state reported by macOS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MicrophonePermissionState {
 	/// Permission already granted.
@@ -101,6 +104,29 @@ pub enum MicrophonePermissionState {
 	Prompted,
 	/// Platform or status could not be queried.
 	Unknown,
+}
+
+/// Activate the current app and bring Voxit to the foreground.
+#[cfg(target_os = "macos")]
+pub fn activate_current_application() -> bool {
+	let app = NSRunningApplication::currentApplication();
+	#[allow(deprecated)]
+	let activated = app.activateWithOptions(
+		NSApplicationActivationOptions::ActivateAllWindows
+			| NSApplicationActivationOptions::ActivateIgnoringOtherApps,
+	);
+
+	if !activated {
+		tracing::warn!("failed to activate current application");
+	}
+
+	activated
+}
+
+/// Activation helper for non-macOS builds.
+#[cfg(not(target_os = "macos"))]
+pub fn activate_current_application() -> bool {
+	false
 }
 
 /// Check whether a permission pane is currently granted.
@@ -122,8 +148,9 @@ pub fn permission_is_granted(_pane: PermissionSettingsPane) -> bool {
 #[cfg(target_os = "macos")]
 pub fn request_permission(pane: PermissionSettingsPane) -> bool {
 	match pane {
-		PermissionSettingsPane::Microphone =>
-			matches!(request_microphone_permission(), MicrophonePermissionState::Granted),
+		PermissionSettingsPane::Microphone => {
+			matches!(request_microphone_permission(), MicrophonePermissionState::Granted)
+		},
 		PermissionSettingsPane::Accessibility => request_accessibility_permission(),
 	}
 }
@@ -193,7 +220,7 @@ pub fn request_microphone_permission() -> MicrophonePermissionState {
 	// handler on an arbitrary queue. In practice this should copy/retain the completion block, but
 	// to avoid any lifetime mismatch across FFI boundaries we intentionally keep the block alive
 	// for the remainder of the process.
-	std::mem::forget(callback);
+	mem::forget(callback);
 
 	MicrophonePermissionState::Prompted
 }
@@ -256,7 +283,7 @@ pub fn activate_target(target: &TargetApp, attempts: u32, base_delay: Duration) 
 			return true;
 		}
 		if attempt_no < attempts {
-			std::thread::sleep(delay);
+			thread::sleep(delay);
 
 			delay = delay.saturating_mul(2).min(Duration::from_millis(500));
 		}

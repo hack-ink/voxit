@@ -4,6 +4,8 @@ use std::{
 	io::Cursor,
 	sync::{
 		Arc, Mutex,
+		atomic::AtomicU64,
+		mpsc,
 		mpsc::{Receiver, SyncSender},
 	},
 	time::Instant,
@@ -36,15 +38,17 @@ const CLIP_MIN: f32 = -1.0;
 const CLIP_MAX: f32 = 1.0;
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 /// Public audio input device entry for user selection.
 pub struct InputDevice {
+	/// Human-readable name shown in the UI dropdown.
 	pub name: String,
+	/// Input device identifier for configuration.
 	pub device_id: u32,
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 /// Audio device selection result for a recording startup attempt.
 pub struct InputDeviceSelection {
 	/// User-requested input device id, if any.
@@ -61,20 +65,30 @@ pub struct InputDeviceSelection {
 #[derive(Debug)]
 /// Finalized capture output.
 pub struct Recording {
+	/// Sample rate used for the captured PCM stream.
 	pub sample_rate: u32,
+	/// Channel count used for the captured PCM stream.
 	pub channels: u16,
+	/// Total frame count captured before WAV encoding.
 	pub frames: u64,
+	/// Capture duration measured at stop time.
 	pub duration_ms: u64,
+	/// Encoded WAV payload returned to the caller.
 	pub wav: Vec<u8>,
 }
 
 #[cfg(target_os = "macos")]
 /// Active microphone capture session.
 pub struct Recorder {
+	io_type: String,
+	selected_device_id: u32,
+	selected_device_name: String,
 	started_at: Instant,
 	sample_rate: u32,
 	channels: u16,
 	recording: Arc<Mutex<Vec<i16>>>,
+	callback_calls: Arc<AtomicU64>,
+	callback_samples: Arc<AtomicU64>,
 	audio_unit: AudioUnit,
 }
 
@@ -98,72 +112,11 @@ impl Recorder {
 
 		let mut audio_unit = AudioUnit::new(io_type).map_err(|err: Error| err.to_string())?;
 		let _ = audio_unit.uninitialize();
-		let enable_input = 1_u32;
-		let disable_output = 0_u32;
 
-		audio_unit
-			.set_property(
-				kAudioOutputUnitProperty_EnableIO,
-				Scope::Input,
-				Element::Input,
-				Some(&enable_input),
-			)
-			.map_err(|err: Error| {
-				format!(
-					"failed to enable input IO (io_type={io_type_name}, scope=Input, element=Input): {err}"
-				)
-			})?;
-		audio_unit
-			.set_property(
-				kAudioOutputUnitProperty_EnableIO,
-				Scope::Output,
-				Element::Output,
-				Some(&disable_output),
-			)
-			.map_err(|err: Error| {
-				format!(
-					"failed to disable output IO (io_type={io_type_name}, scope=Output, element=Output): {err}"
-				)
-			})?;
+		configure_io_enablement(&mut audio_unit, io_type_name)?;
 
 		if !use_voice_processing {
-			let set_current_device =
-				|audio_unit: &mut AudioUnit, device_id: u32| -> Result<(), String> {
-					audio_unit
-						.set_property(
-							kAudioOutputUnitProperty_CurrentDevice,
-							Scope::Global,
-							Element::Output,
-							Some(&device_id),
-						)
-						.map_err(|err: Error| {
-							format!(
-								"failed to set current input device (io_type=HalOutput, device_id={device_id}): {err}"
-							)
-						})
-				};
-
-			if let Err(primary_err) = set_current_device(&mut audio_unit, selected_device_id) {
-				let (fallback_device_id, _) = default_input_device()?;
-
-				if fallback_device_id != selected_device_id {
-					tracing::warn!(
-						device_id = selected_device_id,
-						fallback_device_id = fallback_device_id,
-						"retrying audio unit device selection after initial failure"
-					);
-
-					if let Err(fallback_err) =
-						set_current_device(&mut audio_unit, fallback_device_id)
-					{
-						return Err(format!(
-							"{primary_err}; fallback retry also failed (device_id={fallback_device_id}, error={fallback_err})"
-						));
-					}
-				} else {
-					return Err(primary_err);
-				}
-			}
+			ensure_hal_input_device(&mut audio_unit, selected_device_id)?;
 		}
 
 		let input_format =
@@ -177,9 +130,17 @@ impl Recorder {
 		let recording = Arc::new(Mutex::new(Vec::<i16>::new()));
 		let recording_cb = Arc::clone(&recording);
 		let callback_tx = stream_tx.clone();
+		let callback_calls = Arc::new(AtomicU64::new(0));
+		let callback_samples = Arc::new(AtomicU64::new(0));
+		let callback_calls_cb = Arc::clone(&callback_calls);
+		let callback_samples_cb = Arc::clone(&callback_samples);
 
 		audio_unit
 			.set_input_callback(move |Args { data, .. }: Args<Interleaved<f32>>| {
+				callback_calls_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+				callback_samples_cb
+					.fetch_add(data.buffer.len() as u64, std::sync::atomic::Ordering::SeqCst);
+
 				let mut samples = match recording_cb.lock() {
 					Ok(samples) => samples,
 					Err(_) => return Err(()),
@@ -204,7 +165,18 @@ impl Recorder {
 		audio_unit.initialize().map_err(|err: Error| err.to_string())?;
 		audio_unit.start().map_err(|err: Error| err.to_string())?;
 
-		Ok(Self { started_at: Instant::now(), sample_rate, channels, recording, audio_unit })
+		Ok(Self {
+			io_type: io_type_name.to_string(),
+			selected_device_id,
+			selected_device_name: selection.selected_device_name.clone(),
+			started_at: Instant::now(),
+			sample_rate,
+			channels,
+			recording,
+			callback_calls,
+			callback_samples,
+			audio_unit,
+		})
 	}
 
 	/// Stop the capture session and return WAV bytes.
@@ -216,6 +188,8 @@ impl Recorder {
 			.lock()
 			.map_err(|_| "audio capture buffer is unavailable".to_string())?
 			.clone();
+		let callback_calls = self.callback_calls.load(std::sync::atomic::Ordering::SeqCst);
+		let callback_samples = self.callback_samples.load(std::sync::atomic::Ordering::SeqCst);
 		let frames = if self.channels == 0 {
 			0
 		} else {
@@ -224,6 +198,28 @@ impl Recorder {
 		let duration_ms =
 			if self.sample_rate == 0 { 0 } else { self.started_at.elapsed().as_millis() as u64 };
 		let wav = encode_wav(&samples, self.sample_rate, self.channels)?;
+
+		tracing::info!(
+			io_type = %self.io_type,
+			selected_device_id = self.selected_device_id,
+			selected_device_name = %self.selected_device_name,
+			sample_rate = self.sample_rate,
+			channels = self.channels,
+			frames,
+			duration_ms,
+			wav_bytes = wav.len(),
+			callback_calls,
+			callback_samples,
+			buffer_samples = samples.len(),
+			"audio capture stopped"
+		);
+
+		if samples.is_empty() && duration_ms >= 1_000 {
+			return Err(format!(
+				"no-audio: duration_ms={duration_ms} io_type={} device_id={} device_name=\"{}\"",
+				self.io_type, self.selected_device_id, self.selected_device_name
+			));
+		}
 
 		Ok(Recording {
 			sample_rate: self.sample_rate,
@@ -240,7 +236,7 @@ impl Recorder {
 pub struct Recording;
 
 #[cfg(not(target_os = "macos"))]
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 /// Public audio input device entry for user selection.
 pub struct InputDevice {
 	/// Human-readable name shown in the UI dropdown.
@@ -250,7 +246,7 @@ pub struct InputDevice {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 /// Audio device selection result for a recording startup attempt.
 pub struct InputDeviceSelection {
 	/// User-requested input device id, if any.
@@ -270,7 +266,7 @@ pub fn start_recording_with_stream(
 	chunk_capacity: usize,
 	preferred_device_id: Option<u32>,
 ) -> Result<(Recorder, AudioChunkReceiver, InputDeviceSelection), String> {
-	let (tx, rx) = std::sync::mpsc::sync_channel(chunk_capacity);
+	let (tx, rx) = mpsc::sync_channel(chunk_capacity);
 	let selection = resolve_input_device(preferred_device_id)?;
 	let recorder = Recorder::start_with_stream(Some(tx), &selection)?;
 
@@ -278,6 +274,7 @@ pub fn start_recording_with_stream(
 }
 
 #[cfg(target_os = "macos")]
+/// Stop recording and return the finalized capture payload.
 pub fn stop_recording(recorder: Recorder) -> Result<Recording, String> {
 	recorder.stop()
 }
@@ -367,6 +364,122 @@ fn configure_input_format(
 	let channels = u16::try_from(channels).map_err(|_| "unsupported channel count".to_string())?;
 
 	Ok((sample_rate, channels))
+}
+
+#[cfg(target_os = "macos")]
+fn configure_io_enablement(audio_unit: &mut AudioUnit, io_type_name: &str) -> Result<(), String> {
+	let enable_input = 1_u32;
+	let disable_output = 0_u32;
+	let enable_output = 1_u32;
+
+	audio_unit
+		.set_property(
+			kAudioOutputUnitProperty_EnableIO,
+			Scope::Input,
+			Element::Input,
+			Some(&enable_input),
+		)
+		.map_err(|err: Error| {
+			format!(
+				"failed to enable input IO (io_type={io_type_name}, scope=Input, element=Input): {err}"
+			)
+		})?;
+
+	if io_type_name == "VoiceProcessingIO" {
+		audio_unit
+			.set_property(
+				kAudioOutputUnitProperty_EnableIO,
+				Scope::Output,
+				Element::Output,
+				Some(&disable_output),
+			)
+			.map_err(|err: Error| {
+				format!(
+					"failed to disable output IO (io_type={io_type_name}, scope=Output, element=Output): {err}"
+				)
+			})?;
+	} else {
+		audio_unit
+			.set_property(
+				kAudioOutputUnitProperty_EnableIO,
+				Scope::Output,
+				Element::Output,
+				Some(&enable_output),
+			)
+			.map_err(|err: Error| {
+				format!(
+					"failed to enable output IO (io_type={io_type_name}, scope=Output, element=Output): {err}"
+				)
+			})?;
+	}
+
+	Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn set_hal_input_device(audio_unit: &mut AudioUnit, device_id: u32) -> Result<(), String> {
+	let output_err = audio_unit
+		.set_property(
+			kAudioOutputUnitProperty_CurrentDevice,
+			Scope::Global,
+			Element::Output,
+			Some(&device_id),
+		)
+		.err()
+		.map(|err| err.to_string());
+
+	if output_err.is_none() {
+		return Ok(());
+	}
+
+	let input_err = audio_unit
+		.set_property(
+			kAudioOutputUnitProperty_CurrentDevice,
+			Scope::Global,
+			Element::Input,
+			Some(&device_id),
+		)
+		.err()
+		.map(|err| err.to_string());
+
+	if input_err.is_none() {
+		return Ok(());
+	}
+
+	let output_err = output_err.unwrap_or_else(|| "unknown error".to_string());
+	let input_err = input_err.unwrap_or_else(|| "unknown error".to_string());
+
+	Err(format!(
+		"failed to set current input device (io_type=HalOutput, device_id={device_id}): output={output_err}, input={input_err}"
+	))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_hal_input_device(
+	audio_unit: &mut AudioUnit,
+	selected_device_id: u32,
+) -> Result<(), String> {
+	if let Err(primary_err) = set_hal_input_device(audio_unit, selected_device_id) {
+		let (fallback_device_id, _) = default_input_device()?;
+
+		if fallback_device_id != selected_device_id {
+			tracing::warn!(
+				device_id = selected_device_id,
+				fallback_device_id = fallback_device_id,
+				"retrying audio unit device selection after initial failure"
+			);
+
+			if let Err(fallback_err) = set_hal_input_device(audio_unit, fallback_device_id) {
+				return Err(format!(
+					"{primary_err}; fallback retry also failed (device_id={fallback_device_id}, error={fallback_err})"
+				));
+			}
+		} else {
+			return Err(primary_err);
+		}
+	}
+
+	Ok(())
 }
 
 #[cfg(target_os = "macos")]
