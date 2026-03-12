@@ -1,11 +1,23 @@
 # Voxit v1 System Specification (macOS, English)
 
-## Canonical Scope
+Purpose: Define the normative runtime, auth, capture, paste, configuration, and release
+contract for Voxit v1 in this repository.
 
-This document defines the required behavior for the **Voxit v1** implementation currently in this repository. It is normative and should be treated as the source of truth for behavior and configuration unless a later spec supersedes it.
+Status: normative
 
-- Platform: macOS only for functional features; non-macOS builds show placeholders and disabled behavior.
-- Purpose: Provide tray-visible dictation workflow with streaming Pass1 transcription, post-stop Pass2 finalize, optional Pass3 rewrite, and paste back to the originally active application.
+Read this when: You need the authoritative contract for Voxit v1 behavior, state
+transitions, authentication, audio capture, paste flow, configuration keys, or release
+scope.
+
+Not this document: Step-by-step operational guidance, planning artifacts, exploratory
+design notes, or workflow instructions.
+
+Defines:
+
+- macOS-first runtime scope and platform boundaries
+- user-visible state machine and transcript lifecycle
+- authentication, storage, audio capture, finalize, rewrite, and paste contracts
+- onboarding, configuration, CI, release, observability, and known-gap expectations
 
 ## 1) Runtime Scope and Boundaries
 
