@@ -18,10 +18,14 @@ use std::{
 	time::{Duration, Instant},
 };
 
+use arboard::Clipboard;
 use directories::ProjectDirs;
 use eframe::{
 	App, Frame,
-	egui::{self, Context, Ui},
+	egui::{
+		self, Button, CentralPanel, ComboBox, Context, ScrollArea, Ui, ViewportBuilder,
+		ViewportCommand,
+	},
 };
 #[cfg(target_os = "macos")] use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 #[cfg(target_os = "macos")] use global_hotkey::GlobalHotKeyManager;
@@ -42,7 +46,8 @@ use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{
 	auth::{self, AuthRecord, AuthStatus},
 	config::Config,
-	openai, realtime,
+	openai::{self, RewriteState},
+	realtime,
 	transcript::TranscriptAssembler,
 };
 use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
@@ -634,7 +639,7 @@ impl VoxitApp {
 					}
 
 					match result.state {
-						openai::RewriteState::Applied => {
+						RewriteState::Applied => {
 							self.rewritten_result = result.rewritten_transcript.unwrap_or_default();
 
 							let final_text = if self.rewritten_result.is_empty() {
@@ -651,7 +656,7 @@ impl VoxitApp {
 								self.rewritten_result.len()
 							);
 						},
-						openai::RewriteState::Rejected | openai::RewriteState::Skipped => {
+						RewriteState::Rejected | RewriteState::Skipped => {
 							let fallback_text = self.transcription_result.clone();
 							let paste_status = self.paste_transcript(&fallback_text);
 
@@ -1018,14 +1023,14 @@ impl VoxitApp {
 			let can_auth = !self.auth_busy;
 
 			if self.auth_signed_in {
-				if ui.add_enabled(can_auth, egui::Button::new("Sign out")).clicked() {
+				if ui.add_enabled(can_auth, Button::new("Sign out")).clicked() {
 					self.sign_out();
 				}
 			} else {
-				if ui.add_enabled(can_auth, egui::Button::new("Sign in with ChatGPT")).clicked() {
+				if ui.add_enabled(can_auth, Button::new("Sign in with ChatGPT")).clicked() {
 					self.start_sign_in_with_chatgpt();
 				}
-				if ui.add_enabled(can_auth, egui::Button::new("Device code login")).clicked() {
+				if ui.add_enabled(can_auth, Button::new("Device code login")).clicked() {
 					self.start_sign_in_with_device_code();
 				}
 			}
@@ -1077,7 +1082,7 @@ impl VoxitApp {
 			let mut selected_device_id = self.config.audio.input_device_id;
 			let mut changed = false;
 
-			egui::ComboBox::from_label("Input device")
+			ComboBox::from_label("Input device")
 				.selected_text(self.selected_input_device_label())
 				.show_ui(ui, |ui| {
 					if ui.selectable_value(&mut selected_device_id, 0, "System default").clicked() {
@@ -1203,8 +1208,8 @@ impl VoxitApp {
 
 		self.is_window_visible = true;
 
-		ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-		ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+		ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+		ctx.send_viewport_cmd(ViewportCommand::Focus);
 
 		self.auth_status_refresh_started = false;
 		self.auth_status_checked_once = false;
@@ -1213,7 +1218,7 @@ impl VoxitApp {
 	}
 
 	fn quit_app(&mut self, ctx: &Context) {
-		ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+		ctx.send_viewport_cmd(ViewportCommand::Close);
 	}
 }
 
@@ -1299,8 +1304,8 @@ impl App for VoxitApp {
 		#[cfg(target_os = "macos")]
 		self.hotkey_mode_u8.store(self.hotkey_mode.as_u8(), Ordering::Release);
 
-		egui::CentralPanel::default().show(ctx, |ui| {
-			egui::ScrollArea::vertical().show(ui, |ui| {
+		CentralPanel::default().show(ctx, |ui| {
+			ScrollArea::vertical().show(ui, |ui| {
 				self.render_auth_section(ui);
 				self.render_runtime_controls(ui);
 				self.render_output_section(ui);
@@ -1502,7 +1507,7 @@ fn run_ui() -> Result<()> {
 	}
 
 	let options = eframe::NativeOptions {
-		viewport: egui::ViewportBuilder::default()
+		viewport: ViewportBuilder::default()
 			.with_inner_size(egui::vec2(
 				app_config.ui.panel_width_px as f32,
 				app_config.ui.panel_height_px as f32,
@@ -1552,7 +1557,7 @@ fn run_ui() -> Result<()> {
 		Arc::clone(&hotkey_mode),
 	);
 	let options = eframe::NativeOptions {
-		viewport: egui::ViewportBuilder::default()
+		viewport: ViewportBuilder::default()
 			.with_inner_size(egui::vec2(
 				app_config.ui.panel_width_px as f32,
 				app_config.ui.panel_height_px as f32,
@@ -1578,7 +1583,7 @@ fn run_ui() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn paste_text(text: &str) -> Result<(), String> {
-	let mut clipboard = arboard::Clipboard::new().map_err(|err| err.to_string())?;
+	let mut clipboard = Clipboard::new().map_err(|err| err.to_string())?;
 
 	clipboard.set_text(text.to_string()).map_err(|err| err.to_string())?;
 

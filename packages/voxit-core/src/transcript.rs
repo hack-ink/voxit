@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 /// Transcript update from a realtime event stream.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum TranscriptEvent {
 	/// Incremental partial text for an in-progress speech item.
 	Delta {
@@ -26,7 +26,7 @@ pub enum TranscriptEvent {
 }
 
 /// Rendered snapshot of the current committed + draft transcript state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TranscriptSnapshot {
 	/// Committed transcript, kept in deterministic `previous_item_id` order.
 	pub committed: String,

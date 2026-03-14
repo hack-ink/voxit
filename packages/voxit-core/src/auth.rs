@@ -2,9 +2,12 @@
 
 use std::{
 	collections::HashMap,
-	fs::{self, File, OpenOptions},
-	io::{self, Read as _, Write as _},
+	env,
+	fs::{self, File, OpenOptions, Permissions},
+	io::{self, Error, ErrorKind, Read as _, Write as _},
+	os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
 	path::{Path, PathBuf},
+	string::{String, ToString},
 	sync::{Condvar, Mutex, OnceLock, RwLock},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -19,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tiny_http::{Header, Request, Server};
-use url::Url;
+use url::{Url, form_urlencoded};
 
 type AuthResult<T> = std::result::Result<T, String>;
 
@@ -63,7 +66,7 @@ struct StoredAuthCacheState {
 	result: Option<Option<TokenData>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct TokenData {
 	id_token: String,
 	access_token: String,
@@ -73,7 +76,7 @@ struct TokenData {
 	expires_in_seconds: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredAuth {
 	auth_mode: Option<String>,
 	#[serde(rename = "OPENAI_API_KEY")]
@@ -180,7 +183,7 @@ pub fn access_token() -> AuthResult<(String, Option<String>)> {
 		return Ok((tokens.access_token, tokens.account_id));
 	}
 
-	std::env::var("OPENAI_API_KEY")
+	env::var("OPENAI_API_KEY")
 		.map(|value| (value, None))
 		.map_err(|_| "not signed in and OPENAI_API_KEY is not set".to_string())
 }
@@ -447,7 +450,7 @@ fn should_verify_keyring_storage() -> bool {
 }
 
 fn env_flag_enabled(name: &str) -> bool {
-	match std::env::var(name) {
+	match env::var(name) {
 		Ok(value) => {
 			let value = value.trim().to_ascii_lowercase();
 
@@ -559,16 +562,16 @@ fn clear_cached_session_tokens() {
 }
 
 fn save_to_keyring(base: &Path, payload: &str) -> io::Result<()> {
-	let key = auth_key(base).map_err(io::Error::other)?;
+	let key = auth_key(base).map_err(Error::other)?;
 
 	#[cfg(test)]
 	if env_flag_enabled(TEST_FORCE_KEYRING_ERROR_ENV) {
-		return Err(io::Error::other("forced test keyring error"));
+		return Err(Error::other("forced test keyring error"));
 	}
 
-	let entry = Entry::new(KEYRING_SERVICE, &key).map_err(io::Error::other)?;
+	let entry = Entry::new(KEYRING_SERVICE, &key).map_err(Error::other)?;
 
-	entry.set_password(payload).map_err(io::Error::other)
+	entry.set_password(payload).map_err(Error::other)
 }
 
 fn load_from_keyring(base: &Path) -> AuthResult<Option<StoredAuth>> {
@@ -624,11 +627,8 @@ fn save_to_file(base: &Path, payload: &str) -> AuthResult<()> {
 	let mut builder = OpenOptions::new();
 
 	builder.create(true).truncate(true).write(true);
-
 	#[cfg(unix)]
 	{
-		use std::os::unix::fs::OpenOptionsExt;
-
 		builder.mode(0o600);
 	}
 
@@ -640,12 +640,9 @@ fn save_to_file(base: &Path, payload: &str) -> AuthResult<()> {
 		.map_err(|err| format!("create auth file failed: {err}"))?;
 
 	file.write_all(payload.as_bytes()).map_err(|err| format!("write auth file failed: {err}"))?;
-
 	#[cfg(unix)]
 	{
-		use std::os::unix::fs::PermissionsExt;
-
-		fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+		fs::set_permissions(&path, Permissions::from_mode(0o600))
 			.map_err(|err| format!("set auth file permissions failed: {err}"))?;
 	}
 
@@ -656,7 +653,7 @@ fn load_from_file(base: &Path) -> AuthResult<Option<StoredAuth>> {
 	let path = base.join(AUTH_FILE_NAME);
 	let mut file = match File::open(&path) {
 		Ok(file) => file,
-		Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+		Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
 		Err(err) => return Err(format!("open auth file failed: {err}")),
 	};
 	let mut payload = String::new();
@@ -674,7 +671,7 @@ fn clear_auth_file(base: &Path) -> AuthResult<()> {
 
 	match fs::remove_file(&path) {
 		Ok(()) => Ok(()),
-		Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+		Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
 		Err(err) => Err(format!("remove auth file failed: {err}")),
 	}
 }
@@ -739,9 +736,7 @@ fn handle_callback_request(
 	let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
 
 	if let Some(error) = params.get("error").filter(|v| !v.is_empty()) {
-		let details = params
-			.get("error_description")
-			.map_or_else(String::new, std::string::ToString::to_string);
+		let details = params.get("error_description").map_or_else(String::new, ToString::to_string);
 		let message = if details.is_empty() {
 			format!("oauth callback error: {error}")
 		} else {
@@ -753,7 +748,7 @@ fn handle_callback_request(
 		return Err(message);
 	}
 
-	let state = params.get("state").map_or("", std::string::String::as_str);
+	let state = params.get("state").map_or("", String::as_str);
 
 	if state != expected_state {
 		let message = "state mismatch".to_string();
@@ -1088,7 +1083,7 @@ fn auth_key(base_path: &Path) -> AuthResult<String> {
 }
 
 fn url_encode(value: &str) -> String {
-	url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+	form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
 }
 
 fn html_escape(raw: &str) -> String {
@@ -1110,26 +1105,23 @@ fn html_escape(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+	use std::{env, fs, sync::Mutex};
+
 	use crate::auth::{
-		AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, DEFAULT_ISSUER, DEFAULT_PORT,
-		HashMap, KEYRING_VERIFY_ENABLED_ENV, REDIRECT_URI_PATH, StoredAuth,
-		TEST_FORCE_KEYRING_ERROR_ENV, TokenData, Url, access_token, app_config_dir,
-		browser_redirect_uri, build_authorize_url, cache_session_tokens, cache_stored_auth_tokens,
-		clear_cached_session_tokens, clear_stored_auth_cache, load_from_file,
-		load_stored_auth_tokens, now_unix, save_to_file, should_verify_keyring_storage, status,
-		store_tokens,
+		self, AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, DEFAULT_ISSUER,
+		DEFAULT_PORT, HashMap, KEYRING_VERIFY_ENABLED_ENV, REDIRECT_URI_PATH, StoredAuth,
+		TEST_FORCE_KEYRING_ERROR_ENV, TokenData, Url,
 	};
-	use std::{fs, sync::Mutex};
 
 	static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 	fn set_env(key: &str, value: Option<&str>) -> String {
-		let previous = std::env::var(key).unwrap_or_default();
+		let previous = env::var(key).unwrap_or_default();
 
 		if let Some(value) = value {
-			unsafe { std::env::set_var(key, value) };
+			unsafe { env::set_var(key, value) };
 		} else {
-			unsafe { std::env::remove_var(key) };
+			unsafe { env::remove_var(key) };
 		}
 
 		previous
@@ -1137,24 +1129,24 @@ mod tests {
 
 	fn restore_env(key: &str, previous: String) {
 		if previous.is_empty() {
-			unsafe { std::env::remove_var(key) };
+			unsafe { env::remove_var(key) };
 		} else {
-			unsafe { std::env::set_var(key, previous) };
+			unsafe { env::set_var(key, previous) };
 		}
 	}
 
 	#[test]
 	fn browser_redirect_uri_matches_codex() {
 		assert_eq!(
-			browser_redirect_uri(),
+			auth::browser_redirect_uri(),
 			format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
 		);
 	}
 
 	#[test]
 	fn authorize_url_includes_expected_codex_params() {
-		let url = build_authorize_url(
-			&browser_redirect_uri(),
+		let url = auth::build_authorize_url(
+			&auth::browser_redirect_uri(),
 			"challenge123",
 			"state123",
 			DEFAULT_ISSUER,
@@ -1167,7 +1159,7 @@ mod tests {
 		assert_eq!(params.get("client_id").map(String::as_str), Some(CLIENT_ID));
 		assert_eq!(
 			params.get("redirect_uri").map(String::as_str),
-			Some(browser_redirect_uri().as_str())
+			Some(auth::browser_redirect_uri().as_str())
 		);
 		assert_eq!(
 			params.get("scope").map(String::as_str),
@@ -1185,58 +1177,58 @@ mod tests {
 	fn status_and_access_token_use_in_memory_cache() {
 		let _guard = TEST_MUTEX.lock().unwrap();
 
-		cache_session_tokens(&TokenData {
+		auth::cache_session_tokens(&TokenData {
 			id_token: "id-token".to_string(),
 			access_token: "access-token".to_string(),
 			refresh_token: None,
 			account_id: Some("account-1".to_string()),
-			created_at_unix: now_unix(),
+			created_at_unix: auth::now_unix(),
 			expires_in_seconds: Some(3_600),
 		});
 
-		let status = status();
+		let status = auth::status();
 
 		assert!(status.signed_in);
 		assert_eq!(status.account_id, Some("account-1".to_string()));
 
-		let token = access_token().expect("token from cache");
+		let token = auth::access_token().expect("token from cache");
 
 		assert_eq!(token.0, "access-token");
 		assert_eq!(token.1, Some("account-1".to_string()));
 
-		clear_cached_session_tokens();
+		auth::clear_cached_session_tokens();
 	}
 
 	#[test]
 	fn stored_auth_cache_reuses_tokens_until_invalidation() {
 		let _guard = TEST_MUTEX.lock().unwrap();
 
-		clear_cached_session_tokens();
-		clear_stored_auth_cache();
-		cache_stored_auth_tokens(Some(TokenData {
+		auth::clear_cached_session_tokens();
+		auth::clear_stored_auth_cache();
+		auth::cache_stored_auth_tokens(Some(TokenData {
 			id_token: "cache-id".to_string(),
 			access_token: "cache-access".to_string(),
 			refresh_token: Some("cache-refresh".to_string()),
 			account_id: Some("cache-account".to_string()),
-			created_at_unix: now_unix(),
+			created_at_unix: auth::now_unix(),
 			expires_in_seconds: Some(3_600),
 		}));
 
-		let first = load_stored_auth_tokens().expect("read cache").expect("tokens");
+		let first = auth::load_stored_auth_tokens().expect("read cache").expect("tokens");
 
 		assert_eq!(first.access_token, "cache-access");
 
-		let second = load_stored_auth_tokens().expect("read cache again").expect("tokens");
+		let second = auth::load_stored_auth_tokens().expect("read cache again").expect("tokens");
 
 		assert_eq!(second.access_token, "cache-access");
 
-		cache_stored_auth_tokens(None);
+		auth::cache_stored_auth_tokens(None);
 
-		let cleared = load_stored_auth_tokens().expect("read cleared cache");
+		let cleared = auth::load_stored_auth_tokens().expect("read cleared cache");
 
 		assert!(cleared.is_none());
 
-		clear_stored_auth_cache();
+		auth::clear_stored_auth_cache();
 	}
 
 	#[test]
@@ -1244,7 +1236,7 @@ mod tests {
 		let _guard = TEST_MUTEX.lock().unwrap();
 		let previous = set_env(KEYRING_VERIFY_ENABLED_ENV, None);
 
-		assert!(!should_verify_keyring_storage());
+		assert!(!auth::should_verify_keyring_storage());
 
 		restore_env(KEYRING_VERIFY_ENABLED_ENV, previous);
 	}
@@ -1254,7 +1246,7 @@ mod tests {
 		let _guard = TEST_MUTEX.lock().unwrap();
 		let previous = set_env(KEYRING_VERIFY_ENABLED_ENV, Some("1"));
 
-		assert!(should_verify_keyring_storage());
+		assert!(auth::should_verify_keyring_storage());
 
 		restore_env(KEYRING_VERIFY_ENABLED_ENV, previous);
 	}
@@ -1262,13 +1254,13 @@ mod tests {
 	#[test]
 	fn fallback_to_auth_json_preserves_file_when_keyring_fails() {
 		let _guard = TEST_MUTEX.lock().unwrap();
-		let home = std::env::temp_dir().join(format!("voxit-auth-test-{}", now_unix()));
+		let home = env::temp_dir().join(format!("voxit-auth-test-{}", auth::now_unix()));
 		let home = home.to_string_lossy().to_string();
 		let previous_home = set_env("HOME", Some(&home));
 		let previous_fallback = set_env(AUTH_FILE_FALLBACK_ENV, Some("1"));
 		let previous_force = set_env(TEST_FORCE_KEYRING_ERROR_ENV, Some("1"));
 		let _ = fs::remove_dir_all(home.clone());
-		let base = app_config_dir().expect("app config dir");
+		let base = auth::app_config_dir().expect("app config dir");
 		let original_payload = StoredAuth {
 			auth_mode: Some("chatgpt".to_string()),
 			openai_api_key: Some("legacy-key".to_string()),
@@ -1277,27 +1269,28 @@ mod tests {
 				access_token: "legacy-access".to_string(),
 				refresh_token: Some("legacy-refresh".to_string()),
 				account_id: Some("legacy-account".to_string()),
-				created_at_unix: now_unix(),
+				created_at_unix: auth::now_unix(),
 				expires_in_seconds: Some(3_600),
 			}),
 		};
 		let original_auth_json =
 			serde_json::to_string_pretty(&original_payload).expect("serialize fallback auth");
 
-		save_to_file(&base, &original_auth_json).expect("seed fallback auth file");
+		auth::save_to_file(&base, &original_auth_json).expect("seed fallback auth file");
 
 		let tokens = TokenData {
 			id_token: "new-id".to_string(),
 			access_token: "new-access".to_string(),
 			refresh_token: Some("new-refresh".to_string()),
 			account_id: Some("new-account".to_string()),
-			created_at_unix: now_unix(),
+			created_at_unix: auth::now_unix(),
 			expires_in_seconds: Some(3_600),
 		};
 
-		assert!(store_tokens(&tokens).is_ok());
+		assert!(auth::store_tokens(&tokens).is_ok());
 
-		let saved = load_from_file(&base).expect("read fallback auth file").expect("file exists");
+		let saved =
+			auth::load_from_file(&base).expect("read fallback auth file").expect("file exists");
 
 		assert_eq!(saved.tokens.expect("tokens").access_token, "new-access");
 

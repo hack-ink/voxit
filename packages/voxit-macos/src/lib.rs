@@ -1,6 +1,6 @@
 //! macOS target app capture and activation helpers.
 
-#[cfg(not(target_os = "macos"))] use std::io;
+#[cfg(not(target_os = "macos"))] use std::io::{self, Error, ErrorKind};
 #[cfg(target_os = "macos")] use std::process::Command;
 #[cfg(target_os = "macos")] use std::ptr;
 use std::{ffi::c_void, mem, thread, time::Duration};
@@ -254,7 +254,7 @@ pub fn capture_frontmost_app() -> Option<TargetApp> {
 /// Capture the frontmost app from non-macOS builds.
 #[cfg(not(target_os = "macos"))]
 pub fn capture_frontmost_app() -> Option<TargetApp> {
-	let _ = io::Error::new(io::ErrorKind::Unsupported, "frontmost capture is macOS-only");
+	let _ = Error::new(ErrorKind::Unsupported, "frontmost capture is macOS-only");
 
 	None
 }

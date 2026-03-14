@@ -4,11 +4,16 @@
 #[cfg(target_os = "macos")] use std::time::{Duration, Instant};
 
 use reqwest::blocking::Response;
-#[cfg(target_os = "macos")] use reqwest::blocking::{Client, multipart};
+#[cfg(target_os = "macos")] use reqwest::blocking::{
+	Client,
+	multipart::{self, Form, Part},
+};
 #[cfg(target_os = "macos")] use serde_json::Value;
 
+use crate::auth;
+
 /// Rewrite outcome status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RewriteState {
 	/// Rewrite was intentionally skipped before request.
 	Skipped,
@@ -19,7 +24,7 @@ pub enum RewriteState {
 }
 
 /// Guarded rewrite result payload.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct RewriteResult {
 	/// Optional rewritten transcript when state is `Applied`.
 	pub rewritten_transcript: Option<String>,
@@ -153,11 +158,11 @@ fn post_multipart(
 		.timeout(Duration::from_secs(120))
 		.build()
 		.map_err(|err| format!("failed to build OpenAI HTTP client: {err}"))?;
-	let file_part = multipart::Part::bytes(file_bytes.to_vec())
+	let file_part = Part::bytes(file_bytes.to_vec())
 		.file_name(file_name.to_string())
 		.mime_str("audio/wav")
 		.map_err(|err| format!("invalid file mime: {err}"))?;
-	let form = multipart::Form::new().text("model", model.to_string()).part("file", file_part);
+	let form = Form::new().text("model", model.to_string()).part("file", file_part);
 	let mut request = client.post(url).bearer_auth(api_key).multipart(form);
 
 	if let Some(account_id) = account_id {
@@ -355,42 +360,41 @@ fn normalize_numeric_token(token: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn auth_token() -> Result<(String, Option<String>), String> {
-	crate::auth::access_token().map_err(|err| format!("auth token not available: {err}"))
+	auth::access_token().map_err(|err| format!("auth token not available: {err}"))
 }
 
 #[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests {
-	use crate::openai::{
-		normalize_currency_token, normalize_date_token, normalize_numeric_token,
-		protected_token_multiset,
-	};
+	use crate::openai::{self};
 
 	#[test]
 	fn normalize_numeric_token_extracts_stable_forms() {
-		assert_eq!(normalize_numeric_token("12,345.60"), Some("12345.60".to_string()));
-		assert_eq!(normalize_numeric_token("abc"), None);
+		assert_eq!(openai::normalize_numeric_token("12,345.60"), Some("12345.60".to_string()));
+		assert_eq!(openai::normalize_numeric_token("abc"), None);
 	}
 
 	#[test]
 	fn normalize_currency_token_parses_common_markers() {
-		assert_eq!(normalize_currency_token("$12.50"), Some("$12.50".to_string()));
-		assert_eq!(normalize_currency_token("€1,200"), Some("€1200".to_string()));
-		assert_eq!(normalize_currency_token("100"), None);
+		assert_eq!(openai::normalize_currency_token("$12.50"), Some("$12.50".to_string()));
+		assert_eq!(openai::normalize_currency_token("€1,200"), Some("€1200".to_string()));
+		assert_eq!(openai::normalize_currency_token("100"), None);
 	}
 
 	#[test]
 	fn normalize_date_token_parses_common_patterns() {
-		assert_eq!(normalize_date_token("2026-02-28"), Some("date|2026-02-28".to_string()));
-		assert_eq!(normalize_date_token("02/28/26"), Some("date|26-28-26".to_string()));
-		assert_eq!(normalize_date_token("abc"), None);
+		assert_eq!(openai::normalize_date_token("2026-02-28"), Some("date|2026-02-28".to_string()));
+		assert_eq!(openai::normalize_date_token("02/28/26"), Some("date|26-28-26".to_string()));
+		assert_eq!(openai::normalize_date_token("abc"), None);
 	}
 
 	#[test]
 	fn rewrite_guard_flags_numeric_changes() {
-		let raw = protected_token_multiset("call me at 120 and send 25 dollars on 2026-02-28");
-		let rewritten =
-			protected_token_multiset("call me at one twenty and send 26 dollars on 2026-02-28");
+		let raw =
+			openai::protected_token_multiset("call me at 120 and send 25 dollars on 2026-02-28");
+		let rewritten = openai::protected_token_multiset(
+			"call me at one twenty and send 26 dollars on 2026-02-28",
+		);
 
 		assert_ne!(raw, rewritten);
 	}

@@ -25,7 +25,7 @@ impl Default for UiConfig {
 }
 
 /// Hotkey behavior.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HotkeyConfig {
 	/// Hotkey combination string, e.g. `ctrl+shift+space`.
 	pub chord: String,
@@ -552,11 +552,11 @@ fn serialize_toml(config: &Config) -> String {
 
 #[cfg(test)]
 mod tests {
-	use crate::config::{Config, parse_toml, serialize_toml};
+	use crate::config::{self, Config};
 
 	#[test]
 	fn parse_default_like_content() {
-		let parsed = parse_toml(
+		let parsed = config::parse_toml(
 			r#"
 [ui]
 start_hidden = false
@@ -610,8 +610,8 @@ method = "clipboard_cmd_v"
 	#[test]
 	fn serialize_produces_toml() {
 		let config = Config::default();
-		let raw = serialize_toml(&config);
-		let parsed = parse_toml(raw).expect("should parse serialized value");
+		let raw = config::serialize_toml(&config);
+		let parsed = config::parse_toml(raw).expect("should parse serialized value");
 
 		assert_eq!(parsed.ui.panel_width_px, 420);
 		assert_eq!(parsed.paste.method, "clipboard_cmd_v");
