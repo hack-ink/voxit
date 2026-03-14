@@ -19,6 +19,7 @@ use coreaudio::audio_unit::{
 	render_callback::{Args, data::Interleaved},
 };
 use coreaudio::error::Error;
+use hound::WavWriter;
 #[cfg(target_os = "macos")]
 use objc2_audio_toolbox::{
 	kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
@@ -505,7 +506,7 @@ fn encode_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Vec<u8
 		sample_format: hound::SampleFormat::Int,
 	};
 	let mut cursor = Cursor::new(Vec::new());
-	let mut writer = hound::WavWriter::new(&mut cursor, spec).map_err(|err| err.to_string())?;
+	let mut writer = WavWriter::new(&mut cursor, spec).map_err(|err| err.to_string())?;
 
 	for sample in samples {
 		writer.write_sample::<i16>(*sample).map_err(|err| err.to_string())?;

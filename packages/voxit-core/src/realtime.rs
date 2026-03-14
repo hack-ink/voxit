@@ -10,10 +10,13 @@ use std::{
 	thread::{self, JoinHandle},
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 #[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
 use futures_util::{SinkExt as _, StreamExt as _};
+use http::Request;
 use serde_json::Value;
 #[cfg(all(target_os = "macos", feature = "voxit-realtime"))] use tokio::runtime::Runtime;
+use tokio::time;
 #[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
 use tokio_tungstenite::tungstenite::protocol::Message;
 
@@ -26,7 +29,7 @@ type ParsedFrame = (String, Option<String>, String, bool);
 pub const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime";
 
 /// Realtime session configuration used to initialize VAD/noise reduction settings.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct RealtimeSessionConfig {
 	/// API model id.
 	pub model: String,
@@ -65,7 +68,7 @@ impl RealtimeSession {
 }
 
 /// Runtime events produced by the realtime worker.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum RealtimeEvent {
 	/// Partial segment text.
 	Draft(TranscriptEvent),
@@ -76,7 +79,7 @@ pub enum RealtimeEvent {
 }
 
 /// Realtime session error.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub enum RealtimeError {
 	/// Required websocket client feature is not enabled for this build.
 	#[cfg(not(all(target_os = "macos", feature = "voxit-realtime")))]
@@ -164,7 +167,7 @@ fn run_realtime_worker(
 	let endpoint = format!("{REALTIME_ENDPOINT}?model={}", config.model);
 
 	rt.block_on(async move {
-		let mut builder = http::Request::builder()
+		let mut builder = Request::builder()
 			.method("GET")
 			.uri(endpoint)
 			.header("Authorization", format!("Bearer {api_key}"))
@@ -220,10 +223,10 @@ fn run_realtime_worker(
 					}
 				})?;
 			} else {
-				let _ = tokio::time::sleep(Duration::from_millis(5)).await;
+				let _ = time::sleep(Duration::from_millis(5)).await;
 			}
 
-			let response = tokio::time::timeout(Duration::from_millis(10), ws.next()).await;
+			let response = time::timeout(Duration::from_millis(10), ws.next()).await;
 
 			if let Ok(Some(next)) = response {
 				match next {
@@ -275,8 +278,6 @@ fn run_realtime_worker(
 }
 
 fn chunk_to_base64(samples: &[i16]) -> String {
-	use base64::{Engine, engine::general_purpose::STANDARD};
-
 	let mut bytes = Vec::with_capacity(samples.len() * 2);
 
 	for sample in samples {
@@ -335,12 +336,12 @@ fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError
 
 #[cfg(test)]
 mod tests {
-	use crate::realtime::{RealtimeSessionConfig, chunk_to_base64, parse_realtime_frame};
+	use crate::realtime::{self, RealtimeSessionConfig};
 
 	#[test]
 	fn parses_delta_and_completed_realtime_frames() {
 		let delta = r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item-1","delta":"hello"}"#;
-		let parsed = parse_realtime_frame(delta).expect("parse delta");
+		let parsed = realtime::parse_realtime_frame(delta).expect("parse delta");
 		let (item_id, previous_item_id, transcript, is_final) = parsed.expect("delta should parse");
 
 		assert_eq!(item_id, "item-1");
@@ -349,9 +350,10 @@ mod tests {
 		assert!(!is_final);
 
 		let completed = r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"item-1","transcript":"hello"}"#;
-		let (item_id, previous_item_id, transcript, is_final) = parse_realtime_frame(completed)
-			.expect("parse completed")
-			.expect("completed should parse");
+		let (item_id, previous_item_id, transcript, is_final) =
+			realtime::parse_realtime_frame(completed)
+				.expect("parse completed")
+				.expect("completed should parse");
 
 		assert_eq!(item_id, "item-1");
 		assert_eq!(previous_item_id, None);
@@ -362,7 +364,7 @@ mod tests {
 	#[test]
 	fn chunk_encode_is_deterministic() {
 		let chunk = vec![1, -2, 30_000];
-		let encoded = chunk_to_base64(&chunk);
+		let encoded = realtime::chunk_to_base64(&chunk);
 
 		assert!(!encoded.is_empty());
 	}
