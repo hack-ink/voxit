@@ -6,7 +6,7 @@
 use reqwest::blocking::Response;
 #[cfg(target_os = "macos")] use reqwest::blocking::{
 	Client,
-	multipart::{self, Form, Part},
+	multipart::{Form, Part},
 };
 #[cfg(target_os = "macos")] use serde_json::Value;
 
