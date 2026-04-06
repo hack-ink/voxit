@@ -42,4 +42,4 @@ vergen-gitcl = { version = "9.1", features = ["cargo"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 arboard   = "3.6.1"
 enigo     = "0.6.1"
-tray-icon = "0.21"
+tray-icon = "0.22"
