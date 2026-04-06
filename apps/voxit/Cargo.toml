@@ -27,7 +27,7 @@ default = []
 [dependencies]
 color-eyre         = { version = "0.6" }
 directories        = { version = "6.0" }
-eframe             = { version = "0.33" }
+eframe             = { version = "0.34" }
 global-hotkey      = { version = "0.7", default-features = false }
 tracing            = { version = "0.1" }
 tracing-appender   = { version = "0.2" }
