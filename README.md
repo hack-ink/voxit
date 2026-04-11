@@ -26,7 +26,8 @@ AI dictation App for macOS (MVP scaffold).
 - Auto-paste into the app that was frontmost when recording began.
 - Configurable behavior and models via `config.toml`.
 
-For the normative product contract, constraints, and gaps, see [System Spec v1](docs/spec/system_voxit_v1.md).
+For the normative product contract, constraints, and gaps, see the
+[Runtime Spec](docs/spec/runtime.md).
 
 ## Status
 
@@ -35,7 +36,9 @@ V1 target is **macOS-first** and aligned to the English-only voice input design.
 - Status: ✅ Core MVP loop is implemented (record → stream preview → finalize → optional rewrite → paste).
 - Scope: ✅ Native macOS mic capture + OpenAI model pipeline only.
 - Limitation: ✅ Linux/Windows build is intentionally disabled.
-- Limitation: ⚠️ Known gaps vs full spec are documented in [System Spec v1](docs/spec/system_voxit_v1.md) (hotkey configurability, tray menu behavior, CPAL fallback robustness, and rollout cleanup items).
+- Limitation: ⚠️ Known gaps are documented in the
+  [Runtime Spec](docs/spec/runtime.md) (hotkey configurability, tray menu behavior,
+  CPAL fallback robustness, and rollout cleanup items).
 
 ## Usage
 
@@ -133,6 +136,8 @@ First-run onboarding checklist:
 - Voxit uses request buttons to guide you through the permission prompts in sequence (Microphone → Accessibility → Input Monitoring); grant each permission and re-check when prompted.
 - Verify paste flow after permission grant and restart the app if needed.
 
+For the full guided sequence, see [First Run](docs/runbook/first-run.md).
+
 The app saves updates to the same `config.toml` path when settings are changed.
 
 ### Interaction
@@ -164,6 +169,13 @@ The app saves updates to the same `config.toml` path when settings are changed.
 - `eframe/egui` panel + menubar entrypoint.
 - Dedicated auth/session/config/rewrite/paste pipeline and typed application state.
 - macOS frontmost-app capture + clipboard/command-paste integration.
+
+### Docs
+
+- [Documentation Index](docs/index.md) routes to spec, runbook, reference, and decision docs.
+- [Runtime Spec](docs/spec/runtime.md) is the normative runtime contract.
+- [First Run](docs/runbook/first-run.md) covers sign-in, permission grants, and paste validation.
+- [Repository Layout](docs/reference/repository-layout.md) maps the current repo surfaces.
 
 ## Support Me
 
