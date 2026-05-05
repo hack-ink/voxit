@@ -1,4 +1,4 @@
-# Workspace Layout
+# Repository Layout
 
 Purpose: Describe the current top-level repository surfaces and which concerns each one
 owns.
@@ -6,9 +6,10 @@ owns.
 Read this when: You need to know where the app entrypoint, shared packages, repo task
 definitions, or documentation topics currently live.
 
-Not this document: The normative runtime contract or the onboarding sequence.
+Not this document: The normative runtime contract, the first-run operator sequence, or
+the design rationale behind specific product choices.
 
-Covers: The workspace surface map, ownership boundaries, and the role of `apps/`,
+Covers: The repository surface map, ownership boundaries, and the role of `apps/`,
 `packages/`, `docs/`, `scripts/`, and repository root policy files.
 
 ## Top-level surfaces
@@ -22,7 +23,7 @@ Covers: The workspace surface map, ownership boundaries, and the role of `apps/`
 - `docs/spec/` holds normative runtime and behavior contracts.
 - `docs/runbook/` holds operator procedures such as onboarding and validation flows.
 - `docs/reference/` holds current repository and implementation surface maps.
-- `docs/plans/` holds saved plan artifacts rather than governing repository policy.
+- `docs/decisions/` holds durable rationale and tradeoffs behind current design choices.
 - `Makefile.toml` holds repo-native task names for lint, test, format, and checks.
 - `scripts/` holds repository helper scripts such as local macOS packaging helpers.
 - `.github/workflows/` holds CI and release automation.
@@ -31,8 +32,8 @@ Covers: The workspace surface map, ownership boundaries, and the role of `apps/`
 
 - Runtime authority stays in the application and package crates plus the governing specs
   under `docs/spec/`.
-- `docs/runbook/` and `docs/reference/` must not override runtime or configuration
-  authority.
+- `docs/runbook/`, `docs/reference/`, and `docs/decisions/` must not override runtime
+  or configuration authority.
 - `Makefile.toml` is the source of truth for named repository tasks.
-- `docs/plans/` can capture design or execution artifacts, but those files do not become
-  policy until their conclusions are promoted into spec, runbook, or reference docs.
+- Decision docs explain why the system is shaped a certain way; the spec still defines
+  what must be true at runtime.

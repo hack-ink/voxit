@@ -136,8 +136,7 @@ First-run onboarding checklist:
 - Voxit uses request buttons to guide you through the permission prompts in sequence (Microphone → Accessibility → Input Monitoring); grant each permission and re-check when prompted.
 - Verify paste flow after permission grant and restart the app if needed.
 
-For the full guided sequence, see
-[First-Run Onboarding](docs/runbook/first-run-onboarding.md).
+For the full guided sequence, see [First Run](docs/runbook/first-run.md).
 
 The app saves updates to the same `config.toml` path when settings are changed.
 
@@ -173,9 +172,10 @@ The app saves updates to the same `config.toml` path when settings are changed.
 
 ### Docs
 
-- [Documentation Index](docs/index.md) routes to spec, runbook, and reference docs.
+- [Documentation Index](docs/index.md) routes to spec, runbook, reference, and decision docs.
 - [Runtime Spec](docs/spec/runtime.md) is the normative runtime contract.
-- [Workspace Layout](docs/reference/workspace-layout.md) maps the current repo surfaces.
+- [First Run](docs/runbook/first-run.md) covers sign-in, permission grants, and paste validation.
+- [Repository Layout](docs/reference/repository-layout.md) maps the current repo surfaces.
 
 ## Support Me
 

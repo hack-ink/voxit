@@ -8,20 +8,12 @@ The split below is by question type, not by reader type.
 
 ## Primary taxonomy
 
-This repository standardizes on three primary documentation lanes:
-
 | Lane | Location | Answers | Holds |
 | --- | --- | --- | --- |
 | Spec | `docs/spec/` | What must be true? | Contracts, schemas, invariants, required behavior |
 | Runbook | `docs/runbook/` | Which sequence should I execute? | Operational procedures, onboarding steps, validation flows, recovery steps |
 | Reference | `docs/reference/` | How is it currently organized or implemented? | Repository layout, surface maps, current implementation boundaries |
-
-## Artifact lanes
-
-- `docs/plans/` is allowed for plan artifacts that are explicitly produced or consumed by
-  a planning workflow.
-- `docs/plans/` is not a primary documentation lane and is not authoritative for runtime
-  behavior, repository policy, or operator procedures.
+| Decisions | `docs/decisions/` | Why is it shaped this way? | Durable rationale, tradeoffs, and consequences |
 
 ## Placement rules
 
@@ -29,21 +21,30 @@ This repository standardizes on three primary documentation lanes:
 - If a document defines operator actions, it belongs in `docs/runbook/`.
 - If a document describes current structure, ownership, or implementation boundaries, it
   belongs in `docs/reference/`.
+- If a document records durable rationale or tradeoffs, it belongs in
+  `docs/decisions/`.
+- If a document drifts across lanes, split it instead of stretching one file to answer
+  several question types.
 - Do not duplicate authoritative content across lanes. Link to the source of truth.
+- Do not add `docs/plans/` back. Transient planning artifacts are not part of the
+  durable docs tree in this repository.
 
 ## Naming rules
 
-- Directory names express document type.
+- Directory names express document lane.
 - File names express stable topic.
 - Use lowercase kebab-case for document file names.
-- Do not encode temporary versions such as `v0`, `v1`, or `draft2` into stable file
-  names.
+- Keep primary-lane file names short and topic-first.
+- Do not encode temporary versions such as `v1`, `draft2`, or dates into primary-lane
+  file names.
 - Do not repeat the directory class in the file name when the topic is already clear.
   Prefer `runtime.md` under `docs/spec/` over `runtime-spec.md`.
+- Prefer names like `runtime.md`, `first-run.md`, and `repository-layout.md`.
+- Keep `index.md` reserved for lane routers.
 
 ## Document headers
 
-Every document should start with a short routing header.
+Every primary-lane document should start with a short routing header.
 
 Spec header:
 
@@ -57,9 +58,9 @@ Runbook header:
 
 - `Goal`
 - `Read this when`
-- `Preconditions` or `Inputs`
+- `Inputs` or `Preconditions`
 - `Depends on`
-- `Verification` or `Outputs`
+- `Outputs` or `Verification`
 
 Reference header:
 
@@ -68,12 +69,21 @@ Reference header:
 - `Not this document`
 - `Covers`
 
+Decision header:
+
+- `Status`
+- `Date`
+- `Question`
+- `Decision`
+- `Consequences`
+
 ## Canonical entry points
 
 - Unified router: `docs/index.md`
 - Normative router: `docs/spec/index.md`
 - Procedural router: `docs/runbook/index.md`
 - Current-state router: `docs/reference/index.md`
+- Rationale router: `docs/decisions/index.md`
 - Repo task and automation entrypoints: `Makefile.toml`
 
 ## Update workflow
@@ -81,5 +91,6 @@ Reference header:
 - Behavior or schema change: update the relevant spec.
 - Procedure change: update the relevant runbook.
 - Structural or ownership change: update the relevant reference doc.
-- If a document drifts across lanes, split it instead of stretching one document to do
-  several jobs.
+- Tradeoff or rationale change: update the relevant decision doc.
+- If a document starts carrying normative content from another lane, move that content
+  into the authoritative lane and link to it.

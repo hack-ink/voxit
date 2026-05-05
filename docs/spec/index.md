@@ -9,13 +9,14 @@ Question this index answers: "what must remain true?"
 - You need an invariant, contract, schema, enum, state model, interface, or required
   behavior.
 - You are deciding whether code or data is correct.
-- A guide says "see the governing spec" and you need the authoritative source.
+- A runbook says "see the governing spec" and you need the authoritative source.
 
 ## Do not use this index when
 
 - You need step-by-step instructions, maintenance actions, migrations, or incident
   response.
-- You need a planning-tool artifact or a saved execution plan under `docs/plans/`.
+- You need durable rationale rather than the final contract; read
+  `docs/decisions/index.md`.
 - You want rationale only, without an authoritative contract.
 - You need current layout or implementation boundaries; read `docs/reference/index.md`.
 
@@ -42,7 +43,7 @@ Then keep the body explicit:
 - Separate facts from rationale.
 - Include canonical names exactly as code or data uses them.
 - Include a small example when it removes ambiguity.
-- Link to related guides instead of embedding procedures.
+- Link to related runbooks instead of embedding procedures.
 
 ## Structure policy
 
