@@ -1746,8 +1746,7 @@ fn html_escape(raw: &str) -> String {
 mod tests {
 	use std::{
 		env, fs,
-		sync::Mutex,
-		thread,
+		sync::{Mutex, mpsc},
 		time::{Duration, Instant},
 	};
 
@@ -1925,16 +1924,22 @@ mod tests {
 
 	#[test]
 	fn timeout_helper_stops_waiting_after_deadline() {
+		let (release_tx, release_rx) = mpsc::channel();
 		let start = Instant::now();
-		let err = auth::run_with_timeout("test-timeout", Duration::from_millis(20), || {
-			thread::sleep(Duration::from_millis(120));
+		let err = auth::run_with_timeout("test-timeout", Duration::from_millis(20), move || {
+			let _ = release_rx.recv_timeout(Duration::from_secs(5));
 
 			Ok::<(), String>(())
 		})
 		.expect_err("operation should time out");
+		let elapsed = start.elapsed();
+		let _ = release_tx.send(());
 
 		assert!(err.contains("timed out"));
-		assert!(start.elapsed() < Duration::from_millis(90));
+		assert!(
+			elapsed < Duration::from_secs(2),
+			"timeout helper returned after {elapsed:?}, which suggests it waited for the operation"
+		);
 	}
 
 	#[test]
