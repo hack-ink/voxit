@@ -2,9 +2,13 @@
 
 pub mod auth;
 pub mod config;
+pub mod inference;
 pub mod openai;
 pub mod realtime;
 pub mod transcript;
+
+mod audio_payload;
+mod providers;
 
 pub use self::{
 	auth::{
@@ -12,10 +16,12 @@ pub use self::{
 		sign_in_with_device_code_with_progress, sign_out, status,
 	},
 	config::Config,
-	openai::{InferenceEvent, RewriteResult, RewriteState, rewrite_only, transcribe_only},
+	inference::{
+		InferenceEvent, RewriteResult, RewriteState, rewrite_only, start_realtime_session,
+		transcribe_only,
+	},
 	realtime::{
 		REALTIME_ENDPOINT, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig,
-		start_realtime_session,
 	},
 	transcript::{TranscriptAssembler, TranscriptEvent, TranscriptSnapshot},
 };

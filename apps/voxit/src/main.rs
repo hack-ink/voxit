@@ -29,7 +29,6 @@ use eframe::{
 };
 #[cfg(target_os = "macos")] use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 #[cfg(target_os = "macos")] use global_hotkey::GlobalHotKeyManager;
-use realtime::{RealtimeEvent, RealtimeSession};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 #[cfg(target_os = "macos")]
@@ -46,8 +45,8 @@ use voxit_audio::{InputDevice, Recorder};
 use voxit_core::{
 	auth::{self, AuthRecord, AuthStatus},
 	config::Config,
-	openai::{self, RewriteState},
-	realtime,
+	inference::{self, RewriteState},
+	realtime::{self, RealtimeEvent, RealtimeSession},
 	transcript::TranscriptAssembler,
 };
 use voxit_macos::{MicrophonePermissionState, PermissionSettingsPane, TargetApp};
@@ -119,8 +118,8 @@ struct VoxitApp {
 	auth_event_tx: Sender<AuthEvent>,
 	realtime_event_rx: Receiver<RealtimeEvent>,
 	realtime_event_tx: Sender<RealtimeEvent>,
-	inference_tx: Sender<openai::InferenceEvent>,
-	inference_rx: Receiver<openai::InferenceEvent>,
+	inference_tx: Sender<inference::InferenceEvent>,
+	inference_rx: Receiver<inference::InferenceEvent>,
 	is_recording: bool,
 	is_window_visible: bool,
 	state: String,
@@ -166,8 +165,8 @@ impl VoxitApp {
 		auth_event_tx: Sender<AuthEvent>,
 		realtime_event_rx: Receiver<RealtimeEvent>,
 		realtime_event_tx: Sender<RealtimeEvent>,
-		inference_tx: Sender<openai::InferenceEvent>,
-		inference_rx: Receiver<openai::InferenceEvent>,
+		inference_tx: Sender<inference::InferenceEvent>,
+		inference_rx: Receiver<inference::InferenceEvent>,
 		hotkey_mode_u8: Arc<AtomicU8>,
 	) -> Self {
 		let start_hidden = config.ui.start_hidden;
@@ -608,7 +607,7 @@ impl VoxitApp {
 	fn handle_inference_events(&mut self) {
 		while let Ok(event) = self.inference_rx.try_recv() {
 			match event {
-				openai::InferenceEvent::Pass2Completed { total_ms, raw_transcript } => {
+				inference::InferenceEvent::Pass2Completed { total_ms, raw_transcript } => {
 					self.is_finalizing = false;
 					self.transcription_result = raw_transcript;
 					self.state = "FinalizingPass2".to_string();
@@ -627,7 +626,7 @@ impl VoxitApp {
 						self.status = format!("Pass2 completed in {total_ms} ms. {paste_status}");
 					}
 				},
-				openai::InferenceEvent::RewriteCompleted { total_ms, result } => {
+				inference::InferenceEvent::RewriteCompleted { total_ms, result } => {
 					self.is_rewriting = false;
 
 					if self.ignore_rewrite_result {
@@ -669,7 +668,7 @@ impl VoxitApp {
 						},
 					}
 				},
-				openai::InferenceEvent::Failed(err) => {
+				inference::InferenceEvent::Failed(err) => {
 					self.is_finalizing = false;
 					self.is_rewriting = false;
 					self.status = format!("OpenAI failed: {err}");
@@ -738,49 +737,25 @@ impl VoxitApp {
 					);
 				}
 
-				match auth::access_token() {
-					Ok((api_key, account_id)) => {
-						let realtime_config = realtime::RealtimeSessionConfig {
-							model: self.config.openai.realtime_model.clone(),
-							sample_rate_hz: self.config.audio.realtime_target_rate_hz,
-							noise_reduction: self.config.openai.realtime.noise_reduction.clone(),
-						};
+				let realtime_config = realtime::RealtimeSessionConfig {
+					model: self.config.openai.realtime_model.clone(),
+					sample_rate_hz: self.config.audio.realtime_target_rate_hz,
+					noise_reduction: self.config.openai.realtime.noise_reduction.clone(),
+				};
+				let realtime_status = match inference::start_realtime_session(
+					realtime_config,
+					chunk_rx,
+					self.realtime_event_tx.clone(),
+				) {
+					Ok(session) => {
+						self.realtime_session = Some(session);
 
-						match realtime::start_realtime_session(
-							api_key,
-							account_id,
-							realtime_config,
-							chunk_rx,
-							self.realtime_event_tx.clone(),
-						) {
-							Ok(session) => {
-								self.realtime_session = Some(session);
-							},
-							Err(err) => {
-								let realtime_status = format!(
-									"Realtime unavailable ({err}). Recording continues with Pass2 finalize."
-								);
-
-								self.status = if used_fallback {
-									format!("{fallback_prefix} {realtime_status}")
-								} else {
-									realtime_status
-								};
-							},
-						}
+						None
 					},
-					Err(err) => {
-						let auth_status = format!(
-							"Realtime unavailable because auth is missing ({err}). Recording continues with Pass2 finalize."
-						);
-
-						self.status = if used_fallback {
-							format!("{fallback_prefix} {auth_status}")
-						} else {
-							auth_status
-						};
-					},
-				}
+					Err(err) => Some(format!(
+						"Realtime unavailable ({err}). Recording continues with Pass2 finalize."
+					)),
+				};
 
 				self.is_recording = true;
 				self.is_finalizing = false;
@@ -792,6 +767,10 @@ impl VoxitApp {
 
 				if used_fallback {
 					started_status = format!("{fallback_prefix} {started_status}");
+				}
+
+				if let Some(realtime_status) = realtime_status {
+					started_status = format!("{started_status} {realtime_status}");
 				}
 
 				self.status = started_status;
@@ -867,12 +846,12 @@ impl VoxitApp {
 			self.is_finalizing = true;
 			self.status = "Finalizing Pass2 transcript...".to_string();
 			thread::spawn(move || {
-				let outcome = openai::transcribe_only(&wav, &model)
-					.map(|(raw_transcript, total_ms)| openai::InferenceEvent::Pass2Completed {
+				let outcome = inference::transcribe_only(&wav, &model)
+					.map(|(raw_transcript, total_ms)| inference::InferenceEvent::Pass2Completed {
 						total_ms,
 						raw_transcript,
 					})
-					.unwrap_or_else(openai::InferenceEvent::Failed);
+					.unwrap_or_else(inference::InferenceEvent::Failed);
 				let _ = tx.send(outcome);
 			});
 		}
@@ -896,12 +875,12 @@ impl VoxitApp {
 		let raw = self.transcription_result.clone();
 
 		thread::spawn(move || {
-			let outcome = openai::rewrite_only(&raw, &model)
-				.map(|(result, total_ms)| openai::InferenceEvent::RewriteCompleted {
+			let outcome = inference::rewrite_only(&raw, &model)
+				.map(|(result, total_ms)| inference::InferenceEvent::RewriteCompleted {
 					total_ms,
 					result,
 				})
-				.unwrap_or_else(openai::InferenceEvent::Failed);
+				.unwrap_or_else(inference::InferenceEvent::Failed);
 			let _ = tx.send(outcome);
 		});
 	}
@@ -1232,8 +1211,8 @@ impl VoxitApp {
 		auth_event_tx: Sender<AuthEvent>,
 		realtime_event_rx: Receiver<RealtimeEvent>,
 		realtime_event_tx: Sender<RealtimeEvent>,
-		inference_tx: Sender<openai::InferenceEvent>,
-		inference_rx: Receiver<openai::InferenceEvent>,
+		inference_tx: Sender<inference::InferenceEvent>,
+		inference_rx: Receiver<inference::InferenceEvent>,
 		hotkey_mode_u8: Arc<AtomicU8>,
 		_hotkey_manager: Option<GlobalHotKeyManager>,
 		_tray_icon: TrayIcon,
@@ -1469,7 +1448,7 @@ fn run_ui() -> Result<()> {
 	let (command_tx, command_rx) = mpsc::channel::<AppCommand>();
 	let (auth_event_tx, auth_event_rx) = mpsc::channel::<AuthEvent>();
 	let (realtime_event_tx, realtime_event_rx) = mpsc::channel::<RealtimeEvent>();
-	let (inference_tx, inference_rx) = mpsc::channel::<openai::InferenceEvent>();
+	let (inference_tx, inference_rx) = mpsc::channel::<inference::InferenceEvent>();
 	let initial_hotkey =
 		if app_config.hotkey.mode == "hold" { HotkeyMode::Hold } else { HotkeyMode::Toggle };
 	let hotkey_mode = Arc::new(AtomicU8::new(initial_hotkey.as_u8()));
@@ -1541,7 +1520,7 @@ fn run_ui() -> Result<()> {
 	let (_command_tx, command_rx) = mpsc::channel::<AppCommand>();
 	let (auth_event_tx, auth_event_rx) = mpsc::channel::<AuthEvent>();
 	let (realtime_event_tx, realtime_event_rx) = mpsc::channel::<RealtimeEvent>();
-	let (inference_tx, inference_rx) = mpsc::channel::<openai::InferenceEvent>();
+	let (inference_tx, inference_rx) = mpsc::channel::<inference::InferenceEvent>();
 	let initial_hotkey =
 		if app_config.hotkey.mode == "hold" { HotkeyMode::Hold } else { HotkeyMode::Toggle };
 	let hotkey_mode = Arc::new(AtomicU8::new(initial_hotkey.as_u8()));

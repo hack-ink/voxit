@@ -8,6 +8,16 @@ cargo bundle --release -p voxit
 
 app_path="target/release/bundle/osx/Voxit.app"
 
+if [ "${VOXIT_ALLOW_MULTI_INSTANCE:-0}" != "1" ]; then
+  existing_pids="$(pgrep -x voxit || true)"
+  if [ -n "$existing_pids" ]; then
+    echo "Voxit is already running (pids: $(echo "$existing_pids" | tr '\n' ' '))."
+    echo "Quit it first to avoid launching multiple menu bar instances (this script uses: open -n)."
+    echo "To override, rerun with: VOXIT_ALLOW_MULTI_INSTANCE=1"
+    exit 2
+  fi
+fi
+
 # If the bundle has Gatekeeper attributes, Launch Services may block launch via `open` even for local builds.
 # Only strip attributes when they are actually present.
 if xattr -p com.apple.quarantine "$app_path" >/dev/null 2>&1; then
@@ -28,7 +38,9 @@ fi
 # Without a bundle signature, macOS Launch Services may refuse to launch it with:
 # "code has no resources but signature indicates they must be present".
 # Re-signing the bundle ad-hoc keeps local dev runs launchable via `open`.
-codesign --force --deep --sign - "$app_path"
+codesign_identity="${VOXIT_CODESIGN_IDENTITY:--}"
+echo "Signing Voxit.app with identity: $codesign_identity"
+codesign --force --deep --sign "$codesign_identity" "$app_path"
 
 # Some macOS builds attach `com.apple.provenance` during signing; strip it again to avoid
 # triggering remote Gatekeeper assessment that kills the process shortly after launch.
@@ -40,7 +52,6 @@ if xattr -p com.apple.provenance "$app_path" >/dev/null 2>&1; then
   fi
 fi
 
-pre_pids="$(pgrep -x voxit || true)"
 open -n "$app_path"
 
 new_pid=""
