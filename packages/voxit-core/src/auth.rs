@@ -1,5 +1,280 @@
 //! ChatGPT authentication using OAuth and device-code flow with secure token storage.
 
+#[cfg(target_os = "macos")]
+mod secitem_keychain {
+	use crate::auth::{AuthResult, ensure_keychain_user_interaction_allowed};
+	use core_foundation::{
+		base::{CFType, TCFType},
+		boolean::CFBoolean,
+		data::CFData,
+		dictionary::CFDictionary,
+		string::CFString,
+	};
+	use core_foundation_sys::{
+		base::{CFTypeRef, kCFAllocatorDefault},
+		data::CFDataRef,
+		dictionary::{CFDictionaryCreate, kCFTypeDictionaryKeyCallBacks},
+	};
+	use objc2_foundation::NSString;
+	use objc2_local_authentication::LAContext;
+	use security_framework_sys::{
+		base::{SecCopyErrorMessageString, errSecDuplicateItem, errSecItemNotFound, errSecSuccess},
+		item::{
+			kSecAttrAccount, kSecAttrService, kSecClass, kSecClassGenericPassword, kSecReturnData,
+			kSecUseAuthenticationContext, kSecValueData,
+		},
+		keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate},
+	};
+	use std::{ops::Deref, ptr, time::Instant};
+
+	const OPERATION_PROMPT: &str = "Voxit needs Keychain access to continue sign in.";
+
+	pub(super) struct SecItemQuery {
+		dict: CFDictionary<CFTypeRef, CFTypeRef>,
+		_keepalive: Vec<CFType>,
+	}
+
+	pub(super) fn set_generic_password(
+		service: &str,
+		account: &str,
+		password: &[u8],
+	) -> AuthResult<()> {
+		ensure_keychain_user_interaction_allowed();
+
+		tracing::info!(operation = "SecItemAdd", "starting secitem keychain operation");
+
+		let auth_context = make_authentication_context();
+		let add_query = base_query(service, account, Some(&auth_context), Some(password), false)?;
+		let add_dict = add_query.dict;
+		let add_start = Instant::now();
+		let add_status = unsafe { SecItemAdd(add_dict.as_concrete_TypeRef(), ptr::null_mut()) };
+
+		log_secitem_result("SecItemAdd", add_status, add_start);
+
+		if add_status == errSecDuplicateItem {
+			tracing::info!(operation = "SecItemUpdate", "starting secitem keychain operation");
+
+			let update_query = base_query(service, account, Some(&auth_context), None, false)?;
+			let update_start = Instant::now();
+			let query_dict = update_query.dict;
+			let update_dict = CFDictionary::from_CFType_pairs(&[(
+				unsafe { CFString::wrap_under_get_rule(kSecValueData) },
+				CFData::from_buffer(password).into_CFType(),
+			)]);
+			let update_status = unsafe {
+				SecItemUpdate(query_dict.as_concrete_TypeRef(), update_dict.as_concrete_TypeRef())
+			};
+
+			log_secitem_result("SecItemUpdate", update_status, update_start);
+
+			if update_status != errSecSuccess {
+				return Err(format!(
+					"secitem keychain update failed: {}",
+					status_message(update_status)
+				));
+			}
+
+			return Ok(());
+		}
+		if add_status != errSecSuccess {
+			return Err(format!("secitem keychain write failed: {}", status_message(add_status)));
+		}
+
+		Ok(())
+	}
+
+	pub(super) fn get_generic_password(
+		service: &str,
+		account: &str,
+	) -> AuthResult<Option<Vec<u8>>> {
+		ensure_keychain_user_interaction_allowed();
+
+		tracing::info!(operation = "SecItemCopyMatching", "starting secitem keychain operation");
+
+		let auth_context = make_authentication_context();
+		let query = base_query(service, account, Some(&auth_context), None, true)?;
+		let query_dict = query.dict;
+		let mut result: CFTypeRef = ptr::null_mut();
+		let copy_start = Instant::now();
+		let status = unsafe { SecItemCopyMatching(query_dict.as_concrete_TypeRef(), &mut result) };
+
+		log_secitem_result("SecItemCopyMatching", status, copy_start);
+
+		if status == errSecItemNotFound {
+			return Ok(None);
+		}
+		if status != errSecSuccess {
+			return Err(format!("secitem keychain read failed: {}", status_message(status)));
+		}
+		if result.is_null() {
+			return Err("secitem keychain read returned empty data".to_string());
+		}
+
+		let data = unsafe { CFData::wrap_under_create_rule(result as CFDataRef) };
+
+		Ok(Some(data.bytes().to_vec()))
+	}
+
+	pub(super) fn delete_generic_password(service: &str, account: &str) -> AuthResult<()> {
+		ensure_keychain_user_interaction_allowed();
+
+		tracing::info!(operation = "SecItemDelete", "starting secitem keychain operation");
+
+		let auth_context = make_authentication_context();
+		let query = base_query(service, account, Some(&auth_context), None, false)?;
+		let query = query.dict;
+		let delete_start = Instant::now();
+		let status = unsafe { SecItemDelete(query.as_concrete_TypeRef()) };
+
+		log_secitem_result("SecItemDelete", status, delete_start);
+
+		if status == errSecItemNotFound || status == errSecSuccess {
+			return Ok(());
+		}
+
+		Err(format!("secitem keychain delete failed: {}", status_message(status)))
+	}
+
+	fn make_authentication_context() -> impl Deref<Target = LAContext> {
+		let context = unsafe { LAContext::new() };
+		let localized_reason = NSString::from_str(OPERATION_PROMPT);
+
+		unsafe { context.setLocalizedReason(&localized_reason) };
+
+		context
+	}
+
+	fn base_query(
+		service: &str,
+		account: &str,
+		authentication_context: Option<&LAContext>,
+		secret: Option<&[u8]>,
+		request_return_data: bool,
+	) -> AuthResult<SecItemQuery> {
+		let mut keepalive = Vec::with_capacity(6 + usize::from(secret.is_some()));
+		let mut pairs = Vec::with_capacity(6 + usize::from(secret.is_some()));
+
+		macro_rules! add_pair {
+			($key:expr, $value:expr) => {{
+				let key: CFType = $key;
+				let value: CFType = $value;
+				let key_ref = key.as_concrete_TypeRef() as CFTypeRef;
+				let value_ref = value.as_concrete_TypeRef() as CFTypeRef;
+
+				keepalive.push(key);
+				keepalive.push(value);
+				pairs.push((key_ref, value_ref));
+			}};
+		}
+
+		add_pair!(unsafe { CFString::wrap_under_get_rule(kSecClass).into_CFType() }, unsafe {
+			CFString::wrap_under_get_rule(kSecClassGenericPassword).into_CFType()
+		});
+		add_pair!(
+			unsafe { CFString::wrap_under_get_rule(kSecAttrService).into_CFType() },
+			CFString::from(service).into_CFType()
+		);
+		add_pair!(
+			unsafe { CFString::wrap_under_get_rule(kSecAttrAccount).into_CFType() },
+			CFString::from(account).into_CFType()
+		);
+
+		if request_return_data {
+			add_pair!(
+				unsafe { CFString::wrap_under_get_rule(kSecReturnData).into_CFType() },
+				CFBoolean::from(true).into_CFType()
+			);
+		}
+
+		if let Some(secret) = secret {
+			add_pair!(
+				unsafe { CFString::wrap_under_get_rule(kSecValueData).into_CFType() },
+				CFData::from_buffer(secret).into_CFType()
+			);
+		}
+		if let Some(context) = authentication_context {
+			let context_key = unsafe {
+				CFString::wrap_under_get_rule(kSecUseAuthenticationContext).into_CFType()
+			};
+			let context_key_ref = context_key.as_concrete_TypeRef() as CFTypeRef;
+			let context_ptr = (context as *const LAContext) as CFTypeRef;
+
+			keepalive.push(context_key);
+			pairs.push((context_key_ref, context_ptr));
+		}
+
+		let query_dict = build_query_dictionary(&pairs)?;
+
+		Ok(SecItemQuery { dict: query_dict, _keepalive: keepalive })
+	}
+
+	fn build_query_dictionary(
+		pairs: &[(CFTypeRef, CFTypeRef)],
+	) -> AuthResult<CFDictionary<CFTypeRef, CFTypeRef>> {
+		let mut keys: Vec<CFTypeRef> = Vec::with_capacity(pairs.len());
+		let mut values: Vec<CFTypeRef> = Vec::with_capacity(pairs.len());
+
+		for (key, value) in pairs {
+			keys.push(*key);
+			values.push(*value);
+		}
+
+		let dictionary_ref = unsafe {
+			CFDictionaryCreate(
+				kCFAllocatorDefault,
+				keys.as_ptr(),
+				values.as_ptr(),
+				keys.len() as isize,
+				&kCFTypeDictionaryKeyCallBacks,
+				ptr::null(),
+			)
+		};
+
+		if dictionary_ref.is_null() {
+			return Err("secitem query creation failed: null dictionary pointer".to_string());
+		}
+
+		let query = unsafe { CFDictionary::wrap_under_create_rule(dictionary_ref) };
+
+		Ok(query)
+	}
+
+	fn log_secitem_result(operation: &str, status: i32, start_time: Instant) {
+		let status_message = status_message(status);
+		let elapsed_ms = start_time.elapsed().as_millis();
+
+		if status == errSecSuccess {
+			tracing::info!(
+				operation,
+				elapsed_ms,
+				os_status = status,
+				status_message = %status_message,
+				"secitem operation completed"
+			);
+
+			return;
+		}
+
+		tracing::warn!(
+				operation,
+				elapsed_ms,
+				os_status = status,
+				status_message = %status_message,
+				"secitem operation failed"
+		);
+	}
+
+	fn status_message(status: i32) -> String {
+		let message_ref = unsafe { SecCopyErrorMessageString(status, ptr::null_mut()) };
+
+		if message_ref.is_null() {
+			return format!("OSStatus {status}");
+		}
+
+		unsafe { CFString::wrap_under_create_rule(message_ref).to_string() }
+	}
+}
+
 use std::{
 	collections::HashMap,
 	env,
@@ -8,7 +283,7 @@ use std::{
 	os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
 	path::{Path, PathBuf},
 	string::{String, ToString},
-	sync::{Condvar, Mutex, OnceLock, RwLock},
+	sync::{Condvar, Mutex, OnceLock, RwLock, mpsc, mpsc::RecvTimeoutError},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -29,20 +304,36 @@ type AuthResult<T> = std::result::Result<T, String>;
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const DEFAULT_PORT: u16 = 1_455;
+const FALLBACK_PORT: u16 = 1_457;
 const REDIRECT_URI_PATH: &str = "/auth/callback";
 const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
+const CODEX_OAUTH_SCOPE: &str =
+	"openid profile email offline_access api.connectors.read api.connectors.invoke";
+const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const TOKEN_REFRESH_SKEW_SECS: u64 = 60;
 const KEYRING_SERVICE: &str = "Voxit Auth";
 const KEYRING_KEY_PREFIX: &str = "cli|";
 const AUTH_FILE_NAME: &str = "auth.json";
 const AUTH_FILE_FALLBACK_ENV: &str = "VOXIT_AUTH_FILE_FALLBACK";
 const KEYRING_VERIFY_ENABLED_ENV: &str = "VOXIT_VERIFY_KEYRING";
+const KEYCHAIN_BACKEND_ENV: &str = "VOXIT_KEYCHAIN_BACKEND";
 const KEYRING_VERIFY_ATTEMPTS: usize = 5;
 const KEYRING_VERIFY_DELAY_MS: u64 = 120;
+const KEYCHAIN_OPERATION_TIMEOUT_SECS: u64 = 12;
 #[cfg(test)]
 const TEST_FORCE_KEYRING_ERROR_ENV: &str = "VOXIT_TEST_FORCE_KEYRING_ERROR";
 
 static SESSION_TOKEN_CACHE: OnceLock<RwLock<Option<TokenData>>> = OnceLock::new();
 static STORED_AUTH_CACHE: OnceLock<(Mutex<StoredAuthCacheState>, Condvar)> = OnceLock::new();
+static AUTH_STATUS_LOGGED: OnceLock<()> = OnceLock::new();
+static KEYCHAIN_BACKEND_LOGGED: OnceLock<()> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KeychainBackend {
+	Keyring,
+	#[cfg(target_os = "macos")]
+	SecItem,
+}
 
 /// Authentication result returned to the UI after sign-in.
 #[derive(Clone, Debug)]
@@ -57,6 +348,12 @@ pub struct AuthStatus {
 	/// Whether valid token credentials exist in local storage.
 	pub signed_in: bool,
 	/// Optional ChatGPT account id claim from stored token claims.
+	pub account_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChatGptAuthContext {
+	pub bearer_token: String,
 	pub account_id: Option<String>,
 }
 
@@ -104,8 +401,20 @@ struct DeviceLoginCode {
 	code_verifier: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct RefreshTokenResponse {
+	id_token: Option<String>,
+	access_token: Option<String>,
+	refresh_token: Option<String>,
+	expires_in: Option<u64>,
+}
+
 /// Return stored authentication status without leaking token payload.
 pub fn status() -> AuthStatus {
+	if AUTH_STATUS_LOGGED.set(()).is_ok() {
+		tracing::info!("auth status() invoked");
+	}
+
 	if let Some(tokens) = load_cached_tokens() {
 		return AuthStatus { signed_in: true, account_id: tokens.account_id };
 	}
@@ -171,40 +480,50 @@ where
 	Ok(AuthRecord { account_id: tokens.account_id })
 }
 
-/// Returns `(access_token, account_id)` for API calls.
-/// Falls back to `OPENAI_API_KEY` only when no stored OAuth token exists.
+/// Returns `(access_token, account_id)` for ChatGPT-backed API calls.
 pub fn access_token() -> AuthResult<(String, Option<String>)> {
+	let ctx = chatgpt_auth_context()?;
+
+	Ok((ctx.bearer_token, ctx.account_id))
+}
+
+pub(crate) fn chatgpt_auth_context() -> AuthResult<ChatGptAuthContext> {
 	if let Some(tokens) = load_cached_tokens() {
-		return Ok((tokens.access_token, tokens.account_id));
+		return Ok(ChatGptAuthContext {
+			bearer_token: tokens.access_token,
+			account_id: tokens.account_id,
+		});
 	}
 	if let Some(tokens) = load_stored_auth_tokens()? {
 		cache_session_tokens(&tokens);
 
-		return Ok((tokens.access_token, tokens.account_id));
+		return Ok(ChatGptAuthContext {
+			bearer_token: tokens.access_token,
+			account_id: tokens.account_id,
+		});
 	}
 
-	env::var("OPENAI_API_KEY")
-		.map(|value| (value, None))
-		.map_err(|_| "not signed in and OPENAI_API_KEY is not set".to_string())
+	Err("not signed in with ChatGPT".to_string())
 }
 
 fn sign_in_with_chatgpt_browser() -> AuthResult<AuthRecord> {
 	let pkce = generate_pkce();
 	let state = generate_state();
-	let redirect_uri = browser_redirect_uri();
+	let server = bind_callback_server()?;
+	let redirect_uri = browser_redirect_uri(server_port(&server)?);
 	let authorize_url =
 		build_authorize_url(&redirect_uri, &pkce.code_challenge, &state, DEFAULT_ISSUER);
 
 	webbrowser::open(&authorize_url)
 		.map_err(|_| "failed to open browser for ChatGPT login".to_string())?;
 
-	wait_for_callback(&state, &pkce, &redirect_uri, DEFAULT_ISSUER)
+	wait_for_callback(server, &state, &pkce, &redirect_uri, DEFAULT_ISSUER)
 }
 
-fn browser_redirect_uri() -> String {
+fn browser_redirect_uri(port: u16) -> String {
 	// Codex OSS uses http://localhost:<port>/auth/callback for browser OAuth redirect URI.
 	// Aligning here avoids auth.openai.com rejecting 127.0.0.1 redirect URIs for this client id.
-	format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
+	format!("http://localhost:{port}{REDIRECT_URI_PATH}")
 }
 
 fn valid_tokens_or_none(auth: Option<StoredAuth>) -> AuthResult<Option<TokenData>> {
@@ -217,8 +536,8 @@ fn valid_tokens_or_none(auth: Option<StoredAuth>) -> AuthResult<Option<TokenData
 		None => return Ok(None),
 	};
 
-	if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
-		return Ok(None);
+	if is_token_data_expired(&tokens) {
+		return refresh_stored_tokens(&tokens).map(Some);
 	}
 
 	Ok(Some(tokens))
@@ -232,7 +551,7 @@ fn load_cached_tokens() -> Option<TokenData> {
 	};
 	let tokens = cached?;
 
-	if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
+	if is_token_data_expired(&tokens) {
 		clear_cached_session_tokens();
 
 		return None;
@@ -460,6 +779,63 @@ fn env_flag_enabled(name: &str) -> bool {
 	}
 }
 
+fn keychain_backend() -> KeychainBackend {
+	#[cfg(target_os = "macos")]
+	{
+		let configured =
+			env::var(KEYCHAIN_BACKEND_ENV).unwrap_or_default().trim().to_ascii_lowercase();
+
+		if configured == "keyring" {
+			let backend = KeychainBackend::Keyring;
+
+			if KEYCHAIN_BACKEND_LOGGED.set(()).is_ok() {
+				tracing::info!(?backend, env = %KEYCHAIN_BACKEND_ENV, "keychain backend selected");
+			}
+
+			return backend;
+		}
+
+		let backend = KeychainBackend::SecItem;
+
+		if KEYCHAIN_BACKEND_LOGGED.set(()).is_ok() {
+			tracing::info!(?backend, env = %KEYCHAIN_BACKEND_ENV, "keychain backend selected");
+		}
+
+		backend
+	}
+	#[cfg(not(target_os = "macos"))]
+	{
+		let backend = KeychainBackend::Keyring;
+
+		if KEYCHAIN_BACKEND_LOGGED.set(()).is_ok() {
+			tracing::info!(?backend, env = %KEYCHAIN_BACKEND_ENV, "keychain backend selected");
+		}
+
+		backend
+	}
+}
+
+fn run_with_timeout<T, F>(operation: &str, timeout: Duration, operation_fn: F) -> AuthResult<T>
+where
+	T: Send + 'static,
+	F: FnOnce() -> AuthResult<T> + Send + 'static,
+{
+	let (tx, rx) = mpsc::sync_channel(1);
+	let operation_name = operation.to_string();
+
+	thread::spawn(move || {
+		let _ = tx.send(operation_fn());
+	});
+
+	match rx.recv_timeout(timeout) {
+		Ok(result) => result,
+		Err(RecvTimeoutError::Timeout) =>
+			Err(format!("{operation_name} timed out after {}s", timeout.as_secs())),
+		Err(RecvTimeoutError::Disconnected) =>
+			Err(format!("{operation_name} failed before completion")),
+	}
+}
+
 fn stored_auth_cache() -> &'static (Mutex<StoredAuthCacheState>, Condvar) {
 	STORED_AUTH_CACHE.get_or_init(|| (Mutex::new(StoredAuthCacheState::default()), Condvar::new()))
 }
@@ -472,7 +848,7 @@ fn load_stored_auth_tokens() -> AuthResult<Option<TokenData>> {
 		if let Some(cached) = state.result.clone() {
 			match cached {
 				Some(tokens) => {
-					if is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds) {
+					if is_token_data_expired(&tokens) {
 						clear_cached_session_tokens();
 
 						state.result = None;
@@ -561,27 +937,208 @@ fn clear_cached_session_tokens() {
 	*cache = None;
 }
 
+#[cfg(target_os = "macos")]
+fn ensure_keychain_user_interaction_allowed() {
+	// If keychain user interaction has been disabled in-process (or the OS decides it is),
+	// keychain reads can fail without presenting the expected password/permission prompt.
+	// Re-enable interaction before prompt-critical operations.
+	#[allow(non_snake_case)]
+	unsafe extern "C" {
+		fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
+	}
+
+	unsafe {
+		let _ = SecKeychainSetUserInteractionAllowed(1_u8);
+	}
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_keychain_user_interaction_allowed() {}
+
 fn save_to_keyring(base: &Path, payload: &str) -> io::Result<()> {
 	let key = auth_key(base).map_err(Error::other)?;
+	let payload = payload.to_string();
 
 	#[cfg(test)]
 	if env_flag_enabled(TEST_FORCE_KEYRING_ERROR_ENV) {
 		return Err(Error::other("forced test keyring error"));
 	}
 
-	let entry = Entry::new(KEYRING_SERVICE, &key).map_err(Error::other)?;
+	let backend = keychain_backend();
+	let op = "keychain write";
+	let start = Instant::now();
 
-	entry.set_password(payload).map_err(Error::other)
+	tracing::info!(op = op, ?backend, "starting keychain operation");
+
+	let result = match backend {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem => save_keychain_payload(&key, &payload).map_err(Error::other),
+		KeychainBackend::Keyring =>
+			run_with_timeout(op, Duration::from_secs(KEYCHAIN_OPERATION_TIMEOUT_SECS), move || {
+				save_keychain_payload(&key, &payload)
+			})
+			.map_err(Error::other),
+	};
+
+	match &result {
+		Ok(_) => tracing::info!(
+			op = op,
+			?backend,
+			elapsed_ms = start.elapsed().as_millis(),
+			"completed keychain write operation"
+		),
+		Err(err) => tracing::warn!(
+			op = op,
+			?backend,
+			os_status = -1_i32,
+			status_message = %err.to_string(),
+			"failed keychain write operation"
+		),
+	}
+
+	result
 }
 
 fn load_from_keyring(base: &Path) -> AuthResult<Option<StoredAuth>> {
 	let key = auth_key(base)?;
-	let entry = match Entry::new(KEYRING_SERVICE, &key) {
+	let backend = keychain_backend();
+	let op = "keychain read";
+	let start = Instant::now();
+
+	tracing::info!(op = op, ?backend, "starting keychain operation");
+
+	let value = match backend {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem => load_keychain_payload(&key)?,
+		KeychainBackend::Keyring =>
+			run_with_timeout(op, Duration::from_secs(KEYCHAIN_OPERATION_TIMEOUT_SECS), move || {
+				load_keychain_payload(&key)
+			})?,
+	};
+	let value = match value {
+		Some(value) => value,
+		None => {
+			tracing::info!(
+				op = op,
+				?backend,
+				elapsed_ms = start.elapsed().as_millis(),
+				"completed keychain read operation (not found)"
+			);
+
+			return Ok(None);
+		},
+	};
+	let parsed = serde_json::from_str(&value).map_err(|err| {
+		tracing::warn!(
+			op = op,
+			?backend,
+			os_status = -1_i32,
+			error = %format!("decode keyring auth json failed: {err}"),
+			"failed keychain read operation"
+		);
+
+		format!("decode keyring auth json failed: {err}")
+	})?;
+
+	tracing::info!(
+		op = op,
+		?backend,
+		elapsed_ms = start.elapsed().as_millis(),
+		"completed keychain read operation"
+	);
+
+	Ok(Some(parsed))
+}
+
+fn clear_keyring_entry(base: &Path) -> AuthResult<()> {
+	let key = auth_key(base)?;
+	let backend = keychain_backend();
+	let op = "keychain delete";
+	let start = Instant::now();
+
+	tracing::info!(op = op, ?backend, "starting keychain operation");
+
+	let result = match backend {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem => clear_keychain_payload(&key),
+		KeychainBackend::Keyring =>
+			run_with_timeout(op, Duration::from_secs(KEYCHAIN_OPERATION_TIMEOUT_SECS), move || {
+				clear_keychain_payload(&key)
+			}),
+	};
+
+	match &result {
+		Ok(_) => tracing::info!(
+			op = op,
+			?backend,
+			elapsed_ms = start.elapsed().as_millis(),
+			"completed keychain delete operation"
+		),
+		Err(err) => tracing::warn!(
+			op = op,
+			?backend,
+			os_status = -1_i32,
+			status_message = %err.to_string(),
+			"failed keychain delete operation"
+		),
+	}
+
+	result
+}
+
+fn save_keychain_payload(key: &str, payload: &str) -> AuthResult<()> {
+	match keychain_backend() {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem =>
+			secitem_keychain::set_generic_password(KEYRING_SERVICE, key, payload.as_bytes()),
+		KeychainBackend::Keyring => save_keychain_payload_via_keyring(key, payload),
+	}
+}
+
+fn load_keychain_payload(key: &str) -> AuthResult<Option<String>> {
+	match keychain_backend() {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem => {
+			let bytes = secitem_keychain::get_generic_password(KEYRING_SERVICE, key)?;
+
+			match bytes {
+				Some(bytes) => String::from_utf8(bytes)
+					.map(Some)
+					.map_err(|err| format!("decode keychain payload utf8 failed: {err}")),
+				None => Ok(None),
+			}
+		},
+		KeychainBackend::Keyring => load_keychain_payload_via_keyring(key),
+	}
+}
+
+fn clear_keychain_payload(key: &str) -> AuthResult<()> {
+	match keychain_backend() {
+		#[cfg(target_os = "macos")]
+		KeychainBackend::SecItem => secitem_keychain::delete_generic_password(KEYRING_SERVICE, key),
+		KeychainBackend::Keyring => clear_keychain_payload_via_keyring(key),
+	}
+}
+
+fn save_keychain_payload_via_keyring(key: &str, payload: &str) -> AuthResult<()> {
+	ensure_keychain_user_interaction_allowed();
+
+	let entry =
+		Entry::new(KEYRING_SERVICE, key).map_err(|err| format!("keyring init failed: {err}"))?;
+
+	entry.set_password(payload).map_err(|err| format!("keyring write failed: {err}"))
+}
+
+fn load_keychain_payload_via_keyring(key: &str) -> AuthResult<Option<String>> {
+	ensure_keychain_user_interaction_allowed();
+
+	let entry = match Entry::new(KEYRING_SERVICE, key) {
 		Ok(entry) => entry,
 		Err(_) => return Ok(None),
 	};
-	let value = match entry.get_password() {
-		Ok(value) => value,
+
+	match entry.get_password() {
+		Ok(value) => Ok(Some(value)),
 		Err(err) => {
 			let err_text = err.to_string();
 
@@ -589,19 +1146,15 @@ fn load_from_keyring(base: &Path) -> AuthResult<Option<StoredAuth>> {
 				return Ok(None);
 			}
 
-			return Err(format!("keyring read failed: {err_text}"));
+			Err(format!("keyring read failed: {err_text}"))
 		},
-	};
-	let parsed = serde_json::from_str(&value)
-		.map_err(|err| format!("decode keyring auth json failed: {err}"))?;
-
-	Ok(Some(parsed))
+	}
 }
 
-fn clear_keyring_entry(base: &Path) -> AuthResult<()> {
-	let key = auth_key(base)?;
+fn clear_keychain_payload_via_keyring(key: &str) -> AuthResult<()> {
+	ensure_keychain_user_interaction_allowed();
 
-	match Entry::new(KEYRING_SERVICE, &key) {
+	match Entry::new(KEYRING_SERVICE, key) {
 		Ok(entry) => {
 			if let Err(err) = entry.delete_credential() {
 				let message = err.to_string();
@@ -676,14 +1229,45 @@ fn clear_auth_file(base: &Path) -> AuthResult<()> {
 	}
 }
 
+fn bind_callback_server() -> AuthResult<Server> {
+	let primary = format!("127.0.0.1:{DEFAULT_PORT}");
+
+	match Server::http(&primary) {
+		Ok(server) => Ok(server),
+		Err(primary_err) => {
+			let fallback = format!("127.0.0.1:{FALLBACK_PORT}");
+
+			tracing::warn!(
+				error = %primary_err,
+				primary_port = DEFAULT_PORT,
+				fallback_port = FALLBACK_PORT,
+				"auth callback primary port unavailable; trying fallback"
+			);
+
+			Server::http(&fallback).map_err(|fallback_err| {
+				format!(
+					"failed to bind local callback server on {primary} or {fallback}: {fallback_err}"
+				)
+			})
+		},
+	}
+}
+
+fn server_port(server: &Server) -> AuthResult<u16> {
+	server
+		.server_addr()
+		.to_ip()
+		.map(|addr| addr.port())
+		.ok_or_else(|| "failed to resolve local callback server port".to_string())
+}
+
 fn wait_for_callback(
+	server: Server,
 	expected_state: &str,
 	pkce: &PkceCodes,
 	redirect_uri: &str,
 	issuer: &str,
 ) -> AuthResult<AuthRecord> {
-	let server = Server::http(format!("localhost:{DEFAULT_PORT}"))
-		.map_err(|err| format!("failed to bind local callback server: {err}"))?;
 	let start = Instant::now();
 	let timeout = Duration::from_secs(180);
 
@@ -933,7 +1517,7 @@ fn build_authorize_url(
 	url.query_pairs_mut().append_pair("response_type", "code");
 	url.query_pairs_mut().append_pair("client_id", CLIENT_ID);
 	url.query_pairs_mut().append_pair("redirect_uri", redirect_uri);
-	url.query_pairs_mut().append_pair("scope", "openid profile email offline_access");
+	url.query_pairs_mut().append_pair("scope", CODEX_OAUTH_SCOPE);
 	url.query_pairs_mut().append_pair("code_challenge", code_challenge);
 	url.query_pairs_mut().append_pair("code_challenge_method", "S256");
 	url.query_pairs_mut().append_pair("id_token_add_organizations", "true");
@@ -1018,16 +1602,71 @@ fn parse_error_text(raw: &str) -> String {
 	raw.to_string()
 }
 
+fn refresh_stored_tokens(tokens: &TokenData) -> AuthResult<TokenData> {
+	let refresh_token = tokens.refresh_token.as_ref().ok_or_else(|| {
+		"stored ChatGPT OAuth token expired and has no refresh token; sign in again".to_string()
+	})?;
+	let payload = serde_json::json!({
+		"client_id": CLIENT_ID,
+		"grant_type": "refresh_token",
+		"refresh_token": refresh_token,
+	});
+	let response = post_json(REFRESH_TOKEN_URL, &payload.to_string())
+		.map_err(|err| format!("ChatGPT OAuth refresh failed: {err}"))?;
+	let parsed: RefreshTokenResponse = serde_json::from_str(&response)
+		.map_err(|err| format!("invalid ChatGPT OAuth refresh response: {err}"))?;
+	let access_token = parsed
+		.access_token
+		.ok_or_else(|| "ChatGPT OAuth refresh response missing access_token".to_string())?;
+	let id_token = parsed.id_token.unwrap_or_else(|| tokens.id_token.clone());
+	let account_id = extract_claims(&id_token).and_then(|claims| {
+		claims.get("chatgpt_account_id").and_then(|value| value.as_str()).map(str::to_string)
+	});
+	let refreshed = TokenData {
+		id_token,
+		access_token,
+		refresh_token: parsed.refresh_token.or_else(|| tokens.refresh_token.clone()),
+		account_id: account_id.or_else(|| tokens.account_id.clone()),
+		created_at_unix: now_unix(),
+		expires_in_seconds: parsed.expires_in,
+	};
+
+	store_tokens(&refreshed)?;
+
+	Ok(refreshed)
+}
+
 fn extract_claims(id_token: &str) -> Option<HashMap<String, Value>> {
-	let mut parts = id_token.split('.');
+	let value = decode_jwt_payload(id_token)?;
+	let claims = value.get("https://api.openai.com/auth")?.as_object()?;
+
+	Some(claims.clone().into_iter().collect())
+}
+
+fn decode_jwt_payload(jwt: &str) -> Option<Value> {
+	let mut parts = jwt.split('.');
 	let _header = parts.next()?;
 	let payload = parts.next()?;
 	let payload =
 		base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
-	let value: Value = serde_json::from_slice(&payload).ok()?;
-	let claims = value.get("https://api.openai.com/auth")?.as_object()?;
 
-	Some(claims.clone().into_iter().collect())
+	serde_json::from_slice(&payload).ok()
+}
+
+fn token_expires_at_unix(tokens: &TokenData) -> Option<u64> {
+	if let Some(expires_in) = tokens.expires_in_seconds {
+		return Some(tokens.created_at_unix.saturating_add(expires_in));
+	}
+
+	decode_jwt_payload(&tokens.access_token)?.get("exp")?.as_u64()
+}
+
+fn is_token_data_expired(tokens: &TokenData) -> bool {
+	if let Some(expires_at) = token_expires_at_unix(tokens) {
+		return now_unix().saturating_add(TOKEN_REFRESH_SKEW_SECS) >= expires_at;
+	}
+
+	is_token_expired(tokens.created_at_unix, tokens.expires_in_seconds)
 }
 
 fn is_token_expired(created_at_unix: u64, expires_in: Option<u64>) -> bool {
@@ -1105,12 +1744,18 @@ fn html_escape(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::{env, fs, sync::Mutex};
+	use std::{
+		env, fs,
+		sync::Mutex,
+		thread,
+		time::{Duration, Instant},
+	};
 
 	use crate::auth::{
-		self, AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, DEFAULT_ISSUER,
-		DEFAULT_PORT, HashMap, KEYRING_VERIFY_ENABLED_ENV, REDIRECT_URI_PATH, StoredAuth,
-		TEST_FORCE_KEYRING_ERROR_ENV, TokenData, Url,
+		self, AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, CODEX_OAUTH_SCOPE,
+		DEFAULT_ISSUER, DEFAULT_PORT, HashMap, KEYCHAIN_BACKEND_ENV, KEYRING_VERIFY_ENABLED_ENV,
+		KeychainBackend, REDIRECT_URI_PATH, StoredAuth, TEST_FORCE_KEYRING_ERROR_ENV, TokenData,
+		Url,
 	};
 
 	static TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -1138,7 +1783,7 @@ mod tests {
 	#[test]
 	fn browser_redirect_uri_matches_codex() {
 		assert_eq!(
-			auth::browser_redirect_uri(),
+			auth::browser_redirect_uri(DEFAULT_PORT),
 			format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
 		);
 	}
@@ -1146,7 +1791,7 @@ mod tests {
 	#[test]
 	fn authorize_url_includes_expected_codex_params() {
 		let url = auth::build_authorize_url(
-			&auth::browser_redirect_uri(),
+			&auth::browser_redirect_uri(DEFAULT_PORT),
 			"challenge123",
 			"state123",
 			DEFAULT_ISSUER,
@@ -1159,12 +1804,9 @@ mod tests {
 		assert_eq!(params.get("client_id").map(String::as_str), Some(CLIENT_ID));
 		assert_eq!(
 			params.get("redirect_uri").map(String::as_str),
-			Some(auth::browser_redirect_uri().as_str())
+			Some(auth::browser_redirect_uri(DEFAULT_PORT).as_str())
 		);
-		assert_eq!(
-			params.get("scope").map(String::as_str),
-			Some("openid profile email offline_access")
-		);
+		assert_eq!(params.get("scope").map(String::as_str), Some(CODEX_OAUTH_SCOPE));
 		assert_eq!(params.get("code_challenge").map(String::as_str), Some("challenge123"));
 		assert_eq!(params.get("code_challenge_method").map(String::as_str), Some("S256"));
 		assert_eq!(params.get("id_token_add_organizations").map(String::as_str), Some("true"));
@@ -1249,6 +1891,50 @@ mod tests {
 		assert!(auth::should_verify_keyring_storage());
 
 		restore_env(KEYRING_VERIFY_ENABLED_ENV, previous);
+	}
+
+	#[test]
+	fn keychain_backend_escape_hatch_selects_keyring() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+		let previous = set_env(KEYCHAIN_BACKEND_ENV, Some("keyring"));
+
+		assert_eq!(auth::keychain_backend(), KeychainBackend::Keyring);
+
+		restore_env(KEYCHAIN_BACKEND_ENV, previous);
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn keychain_backend_defaults_to_secitem_on_macos() {
+		let _guard = TEST_MUTEX.lock().unwrap();
+		let previous = set_env(KEYCHAIN_BACKEND_ENV, None);
+
+		assert_eq!(auth::keychain_backend(), KeychainBackend::SecItem);
+
+		restore_env(KEYCHAIN_BACKEND_ENV, previous);
+	}
+
+	#[test]
+	fn timeout_helper_returns_success_before_deadline() {
+		let value =
+			auth::run_with_timeout("test-op", Duration::from_millis(80), || Ok::<u8, String>(7))
+				.expect("operation should complete");
+
+		assert_eq!(value, 7);
+	}
+
+	#[test]
+	fn timeout_helper_stops_waiting_after_deadline() {
+		let start = Instant::now();
+		let err = auth::run_with_timeout("test-timeout", Duration::from_millis(20), || {
+			thread::sleep(Duration::from_millis(120));
+
+			Ok::<(), String>(())
+		})
+		.expect_err("operation should time out");
+
+		assert!(err.contains("timed out"));
+		assert!(start.elapsed() < Duration::from_millis(90));
 	}
 
 	#[test]
