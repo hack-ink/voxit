@@ -1,4 +1,4 @@
-# First Run
+# First-Run Onboarding
 
 Goal: Bring a fresh macOS Voxit install to the point where sign-in, permissions, and
 paste work end to end.
@@ -69,7 +69,7 @@ $HOME/Library/Application Support/voxit/config.toml
 
 ## 6. Failure handling
 
-- If sign-in stalls, reopen the auth surface and retry with the visible-window path.
+- If sign-in stalls, reopen the auth surface and retry with the visible window path.
 - If a permission does not update, grant it in macOS System Settings and then re-check
   from Voxit.
 - If paste fails, verify Accessibility and Input Monitoring first before debugging the

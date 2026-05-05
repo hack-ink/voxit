@@ -15,9 +15,9 @@ Question this index answers: "how is it currently organized or implemented?"
 
 - You need a normative contract.
 - You need an execution sequence or operator runbook.
-- You need durable design rationale rather than current-state description.
+- You need saved plan artifacts.
 
 ## Current reference docs
 
-- [`repository-layout.md`](./repository-layout.md) for the repository surface map and
+- [`workspace-layout.md`](./workspace-layout.md) for the repository surface map and
   directory ownership boundaries.

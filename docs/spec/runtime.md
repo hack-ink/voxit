@@ -9,8 +9,8 @@ Read this when: You need the authoritative contract for Voxit runtime behavior, 
 transitions, authentication, audio capture, paste flow, configuration keys, or release
 scope.
 
-Not this document: Step-by-step operational guidance, design rationale, or workflow
-instructions.
+Not this document: Step-by-step operational guidance, planning artifacts, exploratory
+design notes, or workflow instructions.
 
 Defines:
 
@@ -64,8 +64,8 @@ State transitions:
   - preferred: keyring
   - fallback: local `auth.json`
 - On startup:
-  - read status as "signed in" when unexpired token or session metadata exists
-  - otherwise show "Not signed in."
+  - read status as “signed in” when unexpired token or session metadata exists
+  - otherwise show “Not signed in.”
 
 ## 4) Audio Capture and Streaming Contract
 
@@ -175,7 +175,7 @@ State transitions:
   - Input Monitoring: system prompt request plus re-check
 - Grant each permission in macOS Privacy & Security settings when prompted, then
   re-check in Voxit before continuing.
-- "Paste raw now" is always available when finalization or rewrite is active and should
+- “Paste raw now” is always available when finalization or rewrite is active and should
   bypass Pass3.
 
 ## 10) Configuration Contract
