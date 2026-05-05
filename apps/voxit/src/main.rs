@@ -107,7 +107,6 @@ enum AuthEvent {
 	SignedIn(AuthRecord),
 	StatusChecked(AuthStatus),
 	DeviceCodeInfo { user_code: String, verification_uri: String },
-	Status(String),
 	Failed(String),
 }
 
@@ -384,10 +383,6 @@ impl VoxitApp {
 					self.status =
 						"Device code shown in panel. Open the URL and enter the code.".to_string();
 				},
-				AuthEvent::Status(message) => {
-					self.auth_busy = true;
-					self.status = message;
-				},
 				AuthEvent::Failed(err) => {
 					self.device_code_user_code = None;
 					self.device_code_verification_uri = None;
@@ -505,65 +500,22 @@ impl VoxitApp {
 		self.auth_busy = true;
 		self.device_code_user_code = None;
 		self.device_code_verification_uri = None;
-		self.status = "Starting browser login...".to_string();
+		self.status = "Starting ChatGPT device code login...".to_string();
 
 		let tx = self.auth_event_tx.clone();
 		#[cfg(target_os = "macos")]
 		let _ = voxit_macos::activate_current_application();
 
 		thread::spawn(move || {
-			let event = match auth::sign_in_with_chatgpt() {
+			let event = match auth::sign_in_with_chatgpt(|user_code, verification_uri| {
+				let _ = tx.send(AuthEvent::DeviceCodeInfo {
+					user_code: user_code.to_string(),
+					verification_uri: verification_uri.to_string(),
+				});
+			}) {
 				Ok(record) => AuthEvent::SignedIn(record),
-				Err(err) if is_browser_login_timeout_error(&err) => {
-					let _ = tx.send(AuthEvent::Status(
-						"Browser login timed out. Switching to device-code login.".to_string(),
-					));
-
-					match auth::sign_in_with_device_code_with_progress(
-						|user_code, verification_uri| {
-							let _ = tx.send(AuthEvent::DeviceCodeInfo {
-								user_code: user_code.to_string(),
-								verification_uri: verification_uri.to_string(),
-							});
-						},
-					) {
-						Ok(record) => AuthEvent::SignedIn(record),
-						Err(device_code_err) => AuthEvent::Failed(format!(
-							"browser timeout: {err}; device code login failed: {device_code_err}"
-						)),
-					}
-				},
 				Err(err) => AuthEvent::Failed(err),
 			};
-			let _ = tx.send(event);
-		});
-	}
-
-	fn start_sign_in_with_device_code(&mut self) {
-		if self.auth_busy {
-			return;
-		}
-
-		self.auth_busy = true;
-		self.device_code_user_code = None;
-		self.device_code_verification_uri = None;
-		self.status = "Starting device code login...".to_string();
-
-		let tx = self.auth_event_tx.clone();
-		#[cfg(target_os = "macos")]
-		let _ = voxit_macos::activate_current_application();
-
-		thread::spawn(move || {
-			let event =
-				match auth::sign_in_with_device_code_with_progress(|user_code, verification_uri| {
-					let _ = tx.send(AuthEvent::DeviceCodeInfo {
-						user_code: user_code.to_string(),
-						verification_uri: verification_uri.to_string(),
-					});
-				}) {
-					Ok(record) => AuthEvent::SignedIn(record),
-					Err(err) => AuthEvent::Failed(err),
-				};
 			let _ = tx.send(event);
 		});
 	}
@@ -1009,9 +961,6 @@ impl VoxitApp {
 				if ui.add_enabled(can_auth, Button::new("Sign in with ChatGPT")).clicked() {
 					self.start_sign_in_with_chatgpt();
 				}
-				if ui.add_enabled(can_auth, Button::new("Device code login")).clicked() {
-					self.start_sign_in_with_device_code();
-				}
 			}
 		});
 	}
@@ -1295,12 +1244,6 @@ impl App for VoxitApp {
 			ctx.request_repaint_after(Duration::from_millis(100));
 		}
 	}
-}
-
-fn is_browser_login_timeout_error(message: &str) -> bool {
-	let message = message.to_lowercase();
-
-	message.contains("browser login timeout") || message.contains("callback timeout")
 }
 
 fn ensure_app_data_dir(app_root: &Path) -> Result<()> {

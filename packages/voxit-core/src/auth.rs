@@ -282,7 +282,7 @@ use std::{
 	io::{self, Error, ErrorKind, Read as _, Write as _},
 	os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
 	path::{Path, PathBuf},
-	string::{String, ToString},
+	string::String,
 	sync::{Condvar, Mutex, OnceLock, RwLock, mpsc, mpsc::RecvTimeoutError},
 	thread,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -291,24 +291,16 @@ use std::{
 use base64::Engine;
 use directories::ProjectDirs;
 use keyring::Entry;
-use rand::RngExt as _;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tiny_http::{Header, Request, Server};
-use url::{Url, form_urlencoded};
+use url::form_urlencoded;
 
 type AuthResult<T> = std::result::Result<T, String>;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
-const DEFAULT_PORT: u16 = 1_455;
-const FALLBACK_PORT: u16 = 1_457;
-const REDIRECT_URI_PATH: &str = "/auth/callback";
-const CODEX_OAUTH_ORIGINATOR: &str = "codex_cli_rs";
-const CODEX_OAUTH_SCOPE: &str =
-	"openid profile email offline_access api.connectors.read api.connectors.invoke";
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const TOKEN_REFRESH_SKEW_SECS: u64 = 60;
 const KEYRING_SERVICE: &str = "Voxit Auth";
@@ -383,12 +375,6 @@ struct StoredAuth {
 }
 
 #[derive(Debug)]
-struct PkceCodes {
-	code_verifier: String,
-	code_challenge: String,
-}
-
-#[derive(Debug)]
 struct DeviceCode {
 	device_auth_id: String,
 	user_code: String,
@@ -442,9 +428,12 @@ pub fn sign_out() -> AuthResult<()> {
 	Ok(())
 }
 
-/// Start browser login flow and store OAuth credentials.
-pub fn sign_in_with_chatgpt() -> AuthResult<AuthRecord> {
-	sign_in_with_chatgpt_browser()
+/// Start ChatGPT device-code login and store OAuth credentials.
+pub fn sign_in_with_chatgpt<F>(on_device_code: F) -> AuthResult<AuthRecord>
+where
+	F: Fn(&str, &str),
+{
+	sign_in_with_device_code_with_progress(on_device_code)
 }
 
 /// Start device-code flow and store OAuth credentials.
@@ -467,9 +456,8 @@ where
 	let _ = webbrowser::open(&verification_uri);
 	let login_code = poll_device_code(&device_code)?;
 	let redirect_uri = format!("{DEFAULT_ISSUER}/deviceauth/callback");
-	let pkce = PkceCodes { code_verifier: login_code.code_verifier, code_challenge: String::new() };
 	let tokens = exchange_authorization_code(
-		&pkce,
+		&login_code.code_verifier,
 		&login_code.authorization_code,
 		&redirect_uri,
 		DEFAULT_ISSUER,
@@ -504,26 +492,6 @@ pub(crate) fn chatgpt_auth_context() -> AuthResult<ChatGptAuthContext> {
 	}
 
 	Err("not signed in with ChatGPT".to_string())
-}
-
-fn sign_in_with_chatgpt_browser() -> AuthResult<AuthRecord> {
-	let pkce = generate_pkce();
-	let state = generate_state();
-	let server = bind_callback_server()?;
-	let redirect_uri = browser_redirect_uri(server_port(&server)?);
-	let authorize_url =
-		build_authorize_url(&redirect_uri, &pkce.code_challenge, &state, DEFAULT_ISSUER);
-
-	webbrowser::open(&authorize_url)
-		.map_err(|_| "failed to open browser for ChatGPT login".to_string())?;
-
-	wait_for_callback(server, &state, &pkce, &redirect_uri, DEFAULT_ISSUER)
-}
-
-fn browser_redirect_uri(port: u16) -> String {
-	// Codex OSS uses http://localhost:<port>/auth/callback for browser OAuth redirect URI.
-	// Aligning here avoids auth.openai.com rejecting 127.0.0.1 redirect URIs for this client id.
-	format!("http://localhost:{port}{REDIRECT_URI_PATH}")
 }
 
 fn valid_tokens_or_none(auth: Option<StoredAuth>) -> AuthResult<Option<TokenData>> {
@@ -642,7 +610,7 @@ fn poll_device_code(device_code: &DeviceCode) -> AuthResult<DeviceLoginCode> {
 }
 
 fn exchange_authorization_code(
-	pkce: &PkceCodes,
+	code_verifier: &str,
 	authorization_code: &str,
 	redirect_uri: &str,
 	issuer: &str,
@@ -652,7 +620,7 @@ fn exchange_authorization_code(
 		url_encode(authorization_code),
 		url_encode(redirect_uri),
 		url_encode(CLIENT_ID),
-		url_encode(&pkce.code_verifier),
+		url_encode(code_verifier),
 	);
 	let response = post_form(&format!("{issuer}/oauth/token"), &form)?;
 	let parsed: Value =
@@ -1229,305 +1197,6 @@ fn clear_auth_file(base: &Path) -> AuthResult<()> {
 	}
 }
 
-fn bind_callback_server() -> AuthResult<Server> {
-	let primary = format!("127.0.0.1:{DEFAULT_PORT}");
-
-	match Server::http(&primary) {
-		Ok(server) => Ok(server),
-		Err(primary_err) => {
-			let fallback = format!("127.0.0.1:{FALLBACK_PORT}");
-
-			tracing::warn!(
-				error = %primary_err,
-				primary_port = DEFAULT_PORT,
-				fallback_port = FALLBACK_PORT,
-				"auth callback primary port unavailable; trying fallback"
-			);
-
-			Server::http(&fallback).map_err(|fallback_err| {
-				format!(
-					"failed to bind local callback server on {primary} or {fallback}: {fallback_err}"
-				)
-			})
-		},
-	}
-}
-
-fn server_port(server: &Server) -> AuthResult<u16> {
-	server
-		.server_addr()
-		.to_ip()
-		.map(|addr| addr.port())
-		.ok_or_else(|| "failed to resolve local callback server port".to_string())
-}
-
-fn wait_for_callback(
-	server: Server,
-	expected_state: &str,
-	pkce: &PkceCodes,
-	redirect_uri: &str,
-	issuer: &str,
-) -> AuthResult<AuthRecord> {
-	let start = Instant::now();
-	let timeout = Duration::from_secs(180);
-
-	loop {
-		let request = match server.recv_timeout(Duration::from_millis(200)) {
-			Ok(Some(request)) => request,
-			Ok(None) => {
-				if start.elapsed() > timeout {
-					return Err("browser login timeout".to_string());
-				}
-
-				continue;
-			},
-			Err(err) => return Err(format!("auth callback wait failed: {err}")),
-		};
-
-		match handle_callback_request(request, expected_state, pkce, redirect_uri, issuer)? {
-			Some(record) => return Ok(record),
-			None =>
-				if start.elapsed() > timeout {
-					return Err("browser login timeout".to_string());
-				},
-		}
-	}
-}
-
-fn handle_callback_request(
-	request: Request,
-	expected_state: &str,
-	pkce: &PkceCodes,
-	redirect_uri: &str,
-	issuer: &str,
-) -> AuthResult<Option<AuthRecord>> {
-	let full_url = format!("http://localhost{}", request.url());
-	let parsed = match Url::parse(&full_url) {
-		Ok(parsed) => parsed,
-		Err(err) => {
-			respond_error(request, 400, &format!("bad request: {err}"));
-
-			return Err("callback url parse failed".to_string());
-		},
-	};
-
-	if parsed.path() != REDIRECT_URI_PATH {
-		respond_text(request, 404, "not found");
-
-		return Ok(None);
-	}
-
-	let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
-
-	if let Some(error) = params.get("error").filter(|v| !v.is_empty()) {
-		let details = params.get("error_description").map_or_else(String::new, ToString::to_string);
-		let message = if details.is_empty() {
-			format!("oauth callback error: {error}")
-		} else {
-			format!("oauth callback error: {error} ({details})")
-		};
-
-		respond_error(request, 400, &message);
-
-		return Err(message);
-	}
-
-	let state = params.get("state").map_or("", String::as_str);
-
-	if state != expected_state {
-		let message = "state mismatch".to_string();
-
-		respond_error(request, 400, &message);
-
-		return Err(message);
-	}
-
-	let record = match params.get("code") {
-		Some(code) => {
-			let tokens = match exchange_authorization_code(pkce, code, redirect_uri, issuer) {
-				Ok(tokens) => tokens,
-				Err(err) => {
-					let message = format!("oauth token exchange failed: {err}");
-
-					respond_error(request, 400, &message);
-
-					return Err(message);
-				},
-			};
-
-			if let Err(err) = store_tokens(&tokens) {
-				let message = format!("oauth token save failed: {err}");
-
-				respond_error(request, 500, &message);
-
-				return Err(message);
-			}
-
-			respond_html(request, 200, &success_redirect_page_html());
-
-			AuthRecord { account_id: tokens.account_id }
-		},
-		None => {
-			let message = "missing authorization code".to_string();
-
-			respond_error(request, 400, &message);
-
-			return Err(message);
-		},
-	};
-
-	Ok(Some(record))
-}
-
-fn respond_text(request: Request, status_code: u16, body: &str) {
-	let response = tiny_http::Response::from_string(body).with_status_code(status_code);
-	let _ = request.respond(response);
-}
-
-fn respond_html(request: Request, status_code: u16, body: &str) {
-	let response = tiny_http::Response::from_string(body)
-		.with_status_code(status_code)
-		.with_header(
-			Header::from_bytes("Content-Type", "text/html; charset=utf-8")
-				.expect("valid Content-Type header"),
-		)
-		.with_header(
-			Header::from_bytes("Cache-Control", "no-store").expect("valid Cache-Control header"),
-		);
-	let _ = request.respond(response);
-}
-
-fn respond_error(request: Request, status_code: u16, message: &str) {
-	let body = format!(
-		r#"<html><body><p>{}</p><p>Close this window and retry from Voxit.</p></body></html>"#,
-		html_escape(message)
-	);
-
-	respond_html(request, status_code, &body);
-}
-
-fn success_redirect_page_html() -> String {
-	// Browsers often block `window.close()` unless the window was opened by script.
-	// Still attempt auto-close to match common OAuth UX; always show a manual close instruction.
-	r#"<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Voxit Sign-in</title>
-    <style>
-      :root { color-scheme: light; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-          Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-        background: radial-gradient(circle at top, #f7f8fb 0%, #ffffff 48%);
-        color: #0d0d0d;
-      }
-      .container {
-        min-height: 100vh;
-        padding: 24px;
-        box-sizing: border-box;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .card {
-        width: min(560px, 100%);
-        border-radius: 16px;
-        border: 1px solid rgba(13, 13, 13, 0.12);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.06);
-        background: #ffffff;
-        padding: 24px;
-        text-align: center;
-      }
-      .title {
-        margin: 0 0 8px 0;
-        font-size: 18px;
-        font-weight: 650;
-        letter-spacing: -0.01em;
-      }
-      .desc { margin: 0 0 10px 0; color: rgba(13, 13, 13, 0.76); line-height: 1.45; }
-      .muted { margin: 0; color: rgba(13, 13, 13, 0.60); font-size: 13px; line-height: 1.4; }
-      .pill {
-        display: inline-block;
-        margin-top: 14px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(13, 13, 13, 0.12);
-        background: rgba(13, 13, 13, 0.03);
-        font-size: 13px;
-        color: rgba(13, 13, 13, 0.72);
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="card">
-        <h1 class="title">Signed in</h1>
-        <p class="desc">
-          You may return to Voxit. This window will try to close automatically in
-          <strong><span id="seconds">7</span>s</strong>.
-        </p>
-        <p class="muted">If it doesn’t close automatically, please close this window manually.</p>
-        <div class="pill">You can safely close this page.</div>
-      </div>
-    </div>
-    <script>
-      (function () {
-        var remaining = 7;
-        var el = document.getElementById("seconds");
-        function update() {
-          if (el) el.textContent = String(Math.max(0, remaining));
-        }
-        function attemptClose() {
-          try { window.open("", "_self"); } catch (e) {}
-          try { window.close(); } catch (e) {}
-        }
-        update();
-        var timer = setInterval(function () {
-          remaining -= 1;
-          update();
-          if (remaining <= 0) {
-            clearInterval(timer);
-            attemptClose();
-          }
-        }, 1000);
-        setTimeout(attemptClose, 7000);
-      })();
-    </script>
-  </body>
-</html>
-"#
-	.to_string()
-}
-
-fn build_authorize_url(
-	redirect_uri: &str,
-	code_challenge: &str,
-	state: &str,
-	issuer: &str,
-) -> String {
-	let mut url = Url::parse(&format!("{issuer}/oauth/authorize")).unwrap_or_else(|_| {
-		Url::parse("https://auth.openai.com/oauth/authorize")
-			.unwrap_or_else(|_| Url::parse("https://example.com").expect("valid fallback url"))
-	});
-
-	url.query_pairs_mut().append_pair("response_type", "code");
-	url.query_pairs_mut().append_pair("client_id", CLIENT_ID);
-	url.query_pairs_mut().append_pair("redirect_uri", redirect_uri);
-	url.query_pairs_mut().append_pair("scope", CODEX_OAUTH_SCOPE);
-	url.query_pairs_mut().append_pair("code_challenge", code_challenge);
-	url.query_pairs_mut().append_pair("code_challenge_method", "S256");
-	url.query_pairs_mut().append_pair("id_token_add_organizations", "true");
-	url.query_pairs_mut().append_pair("codex_cli_simplified_flow", "true");
-	url.query_pairs_mut().append_pair("state", state);
-	url.query_pairs_mut().append_pair("originator", CODEX_OAUTH_ORIGINATOR);
-
-	url.to_string()
-}
-
 fn post_json(url: &str, body: &str) -> AuthResult<String> {
 	let client = Client::builder()
 		.timeout(Duration::from_secs(120))
@@ -1558,7 +1227,7 @@ fn post_form(url: &str, body: &str) -> AuthResult<String> {
 	parse_response(response, url)
 }
 
-fn post_raw(url: &str, body: &[u8]) -> AuthResult<reqwest::blocking::Response> {
+fn post_raw(url: &str, body: &[u8]) -> AuthResult<Response> {
 	let client = Client::builder()
 		.timeout(Duration::from_secs(120))
 		.build()
@@ -1573,7 +1242,7 @@ fn post_raw(url: &str, body: &[u8]) -> AuthResult<reqwest::blocking::Response> {
 	Ok(response)
 }
 
-fn parse_response(response: reqwest::blocking::Response, context: &str) -> AuthResult<String> {
+fn parse_response(response: Response, context: &str) -> AuthResult<String> {
 	if !response.status().is_success() {
 		let status = response.status();
 		let body = response.text().unwrap_or_else(|_| "<unreadable>".to_string());
@@ -1676,28 +1345,6 @@ fn is_token_expired(created_at_unix: u64, expires_in: Option<u64>) -> bool {
 	now >= created_at_unix.saturating_add(ttl)
 }
 
-fn generate_pkce() -> PkceCodes {
-	let mut bytes = [0_u8; 64];
-	let mut rng = rand::rng();
-
-	rng.fill(&mut bytes);
-
-	let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-	let challenge = Sha256::digest(code_verifier.as_bytes());
-	let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge);
-
-	PkceCodes { code_verifier, code_challenge }
-}
-
-fn generate_state() -> String {
-	let mut bytes = [0_u8; 32];
-	let mut rng = rand::rng();
-
-	rng.fill(&mut bytes);
-
-	base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
 fn now_unix() -> u64 {
 	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -1725,23 +1372,6 @@ fn url_encode(value: &str) -> String {
 	form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
 }
 
-fn html_escape(raw: &str) -> String {
-	let mut out = String::new();
-
-	for ch in raw.chars() {
-		match ch {
-			'&' => out.push_str("&amp;"),
-			'<' => out.push_str("&lt;"),
-			'>' => out.push_str("&gt;"),
-			'"' => out.push_str("&quot;"),
-			'\'' => out.push_str("&#39;"),
-			_ => out.push(ch),
-		}
-	}
-
-	out
-}
-
 #[cfg(test)]
 mod tests {
 	use std::{
@@ -1751,10 +1381,8 @@ mod tests {
 	};
 
 	use crate::auth::{
-		self, AUTH_FILE_FALLBACK_ENV, CLIENT_ID, CODEX_OAUTH_ORIGINATOR, CODEX_OAUTH_SCOPE,
-		DEFAULT_ISSUER, DEFAULT_PORT, HashMap, KEYCHAIN_BACKEND_ENV, KEYRING_VERIFY_ENABLED_ENV,
-		KeychainBackend, REDIRECT_URI_PATH, StoredAuth, TEST_FORCE_KEYRING_ERROR_ENV, TokenData,
-		Url,
+		self, AUTH_FILE_FALLBACK_ENV, KEYCHAIN_BACKEND_ENV, KEYRING_VERIFY_ENABLED_ENV,
+		KeychainBackend, StoredAuth, TEST_FORCE_KEYRING_ERROR_ENV, TokenData,
 	};
 
 	static TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -1777,41 +1405,6 @@ mod tests {
 		} else {
 			unsafe { env::set_var(key, previous) };
 		}
-	}
-
-	#[test]
-	fn browser_redirect_uri_matches_codex() {
-		assert_eq!(
-			auth::browser_redirect_uri(DEFAULT_PORT),
-			format!("http://localhost:{DEFAULT_PORT}{REDIRECT_URI_PATH}")
-		);
-	}
-
-	#[test]
-	fn authorize_url_includes_expected_codex_params() {
-		let url = auth::build_authorize_url(
-			&auth::browser_redirect_uri(DEFAULT_PORT),
-			"challenge123",
-			"state123",
-			DEFAULT_ISSUER,
-		);
-		let parsed = Url::parse(&url).expect("valid authorize url");
-		let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
-
-		assert_eq!(parsed.path(), "/oauth/authorize");
-		assert_eq!(params.get("response_type").map(String::as_str), Some("code"));
-		assert_eq!(params.get("client_id").map(String::as_str), Some(CLIENT_ID));
-		assert_eq!(
-			params.get("redirect_uri").map(String::as_str),
-			Some(auth::browser_redirect_uri(DEFAULT_PORT).as_str())
-		);
-		assert_eq!(params.get("scope").map(String::as_str), Some(CODEX_OAUTH_SCOPE));
-		assert_eq!(params.get("code_challenge").map(String::as_str), Some("challenge123"));
-		assert_eq!(params.get("code_challenge_method").map(String::as_str), Some("S256"));
-		assert_eq!(params.get("id_token_add_organizations").map(String::as_str), Some("true"));
-		assert_eq!(params.get("codex_cli_simplified_flow").map(String::as_str), Some("true"));
-		assert_eq!(params.get("state").map(String::as_str), Some("state123"));
-		assert_eq!(params.get("originator").map(String::as_str), Some(CODEX_OAUTH_ORIGINATOR));
 	}
 
 	#[test]
