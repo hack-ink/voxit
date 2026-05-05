@@ -6,14 +6,14 @@ use std::{
 };
 
 use reqwest::blocking::{
-	Client, Response,
+	Client, RequestBuilder, Response,
 	multipart::{Form, Part},
 };
 use serde_json::Value;
 
 use crate::{
 	audio_payload::{self, PreparedTranscriptionAudio},
-	auth::ChatGptAuthContext,
+	auth::{self, ChatGptAuthContext},
 	providers::{InferenceProvider, RewriteRequest, TranscriptionRequest},
 	realtime::{self, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig},
 };
@@ -30,11 +30,10 @@ pub(crate) struct ChatGptProvider {
 	auth: ChatGptAuthContext,
 	client: Client,
 }
-
 impl ChatGptProvider {
 	/// Build the provider from stored ChatGPT OAuth credentials.
 	pub(crate) fn from_stored_oauth() -> Result<Self, String> {
-		let auth = crate::auth::chatgpt_auth_context()?;
+		let auth = auth::chatgpt_auth_context()?;
 		let client = Client::builder()
 			.timeout(Duration::from_secs(120))
 			.build()
@@ -133,10 +132,7 @@ impl ChatGptProvider {
 		check_status(response, "rewrite")
 	}
 
-	fn with_auth(
-		&self,
-		request: reqwest::blocking::RequestBuilder,
-	) -> reqwest::blocking::RequestBuilder {
+	fn with_auth(&self, request: RequestBuilder) -> RequestBuilder {
 		let request =
 			request.bearer_auth(&self.auth.bearer_token).header("User-Agent", VOXIT_USER_AGENT);
 

@@ -1,18 +1,15 @@
 //! Provider-routed transcription and rewrite pipeline.
 
-#[cfg(target_os = "macos")]
-use std::{
-	collections::BTreeMap,
-	sync::mpsc::{Receiver, Sender},
-	time::Instant,
-};
+use std::sync::mpsc::{Receiver, Sender};
+#[cfg(target_os = "macos")] use std::{collections::BTreeMap, time::Instant};
 
 #[cfg(target_os = "macos")]
+use crate::providers::{self, InferenceProvider, RewriteRequest, TranscriptionRequest};
 use crate::{
-	providers::{self, InferenceProvider, RewriteRequest, TranscriptionRequest},
+	providers::chatgpt::ChatGptProvider,
 	realtime::{RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig},
 };
-#[cfg(target_os = "macos")] use voxit_audio::AudioChunk;
+use voxit_audio::AudioChunk;
 
 /// Rewrite outcome status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,7 +23,7 @@ pub enum RewriteState {
 }
 
 /// Guarded rewrite result payload.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct RewriteResult {
 	/// Optional rewritten transcript when state is `Applied`.
 	pub rewritten_transcript: Option<String>,
@@ -74,15 +71,15 @@ pub fn start_realtime_session(
 /// Realtime inference is unavailable on non-macOS placeholder builds.
 #[cfg(not(target_os = "macos"))]
 pub fn start_realtime_session(
-	config: crate::realtime::RealtimeSessionConfig,
-	chunk_rx: std::sync::mpsc::Receiver<voxit_audio::AudioChunk>,
-	event_tx: std::sync::mpsc::Sender<crate::realtime::RealtimeEvent>,
-) -> Result<crate::realtime::RealtimeSession, crate::realtime::RealtimeError> {
+	config: RealtimeSessionConfig,
+	chunk_rx: Receiver<AudioChunk>,
+	event_tx: Sender<RealtimeEvent>,
+) -> Result<RealtimeSession, RealtimeError> {
 	let _ = config;
 	let _ = chunk_rx;
 	let _ = event_tx;
 
-	Err(crate::realtime::RealtimeError::DependencyUnavailable {
+	Err(RealtimeError::DependencyUnavailable {
 		reason: "inference pipeline is only enabled on macOS builds".to_string(),
 	})
 }
@@ -130,7 +127,7 @@ pub fn rewrite_only(_text: &str, _model: &str) -> Result<(RewriteResult, u64), S
 }
 
 #[cfg(target_os = "macos")]
-fn default_provider() -> Result<providers::chatgpt::ChatGptProvider, String> {
+fn default_provider() -> Result<ChatGptProvider, String> {
 	providers::chatgpt_oauth_provider()
 }
 
