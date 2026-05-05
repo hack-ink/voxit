@@ -9,14 +9,16 @@ Question this index answers: "what must remain true?"
 - You need an invariant, contract, schema, enum, state model, interface, or required
   behavior.
 - You are deciding whether code or data is correct.
-- A guide says "see the governing spec" and you need the authoritative source.
+- A runbook says "see the governing spec" and you need the authoritative source.
 
 ## Do not use this index when
 
 - You need step-by-step instructions, maintenance actions, migrations, or incident
   response.
-- You need a planning-tool artifact or a saved execution plan under `docs/plans/`.
+- You need durable rationale rather than the final contract; read
+  `docs/decisions/index.md`.
 - You want rationale only, without an authoritative contract.
+- You need current layout or implementation boundaries; read `docs/reference/index.md`.
 
 ## What belongs in `docs/spec/`
 
@@ -41,13 +43,17 @@ Then keep the body explicit:
 - Separate facts from rationale.
 - Include canonical names exactly as code or data uses them.
 - Include a small example when it removes ambiguity.
-- Link to related guides instead of embedding procedures.
+- Link to related runbooks instead of embedding procedures.
 
 ## Structure policy
 
 - Prefer shallow paths while the spec set is small.
 - Add subfolders only when they mirror stable system boundaries or materially reduce
   ambiguity.
-- Do not require fixed filename prefixes up front.
 - Choose names for topic clarity and retrieval quality, not visual uniformity.
-- If a guide depends on a spec, the guide links back to the governing spec.
+- If a runbook depends on a spec, the runbook links back to the governing spec.
+
+## Current governing specs
+
+- [`runtime.md`](./runtime.md) defines the runtime scope, auth flow, audio capture,
+  transcript pipeline, paste behavior, configuration keys, and known gaps.
