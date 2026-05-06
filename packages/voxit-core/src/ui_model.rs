@@ -59,6 +59,14 @@ pub enum HotkeySurfaceMode {
 	/// Hold to record and release to stop.
 	Hold,
 }
+impl HotkeySurfaceMode {
+	fn from_config_value(value: &str) -> Self {
+		match value {
+			"hold" => Self::Hold,
+			_ => Self::Toggle,
+		}
+	}
+}
 
 /// Minimal platform-neutral snapshot rendered by native hosts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,18 +104,12 @@ impl NativeHostSnapshot {
 	}
 }
 
-impl HotkeySurfaceMode {
-	fn from_config_value(value: &str) -> Self {
-		match value {
-			"hold" => Self::Hold,
-			_ => Self::Toggle,
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::{
+		config::Config,
+		ui_model::{HotkeySurfaceMode, NativeHostSnapshot, PlatformHost},
+	};
 
 	#[test]
 	fn initial_snapshot_uses_configured_dimensions_and_rewrite_flag() {

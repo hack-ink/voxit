@@ -246,15 +246,17 @@ fn encode_hotkey_mode(mode: HotkeySurfaceMode) -> VoxitHotkeyMode {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use crate::{
+		VoxitAuthMethod, VoxitDictationState, VoxitHostConfig, VoxitHostSnapshot, VoxitPlatformTag,
+		VoxitStatus,
+	};
 
 	#[test]
 	fn session_snapshot_uses_device_code_auth_method() {
 		let handle =
-			voxit_host_session_create(VoxitHostConfig { platform: VoxitPlatformTag::MacOS });
+			crate::voxit_host_session_create(VoxitHostConfig { platform: VoxitPlatformTag::MacOS });
 		let mut snapshot = VoxitHostSnapshot::default();
-
-		let status = unsafe { voxit_host_session_copy_snapshot(handle, &mut snapshot) };
+		let status = unsafe { crate::voxit_host_session_copy_snapshot(handle, &mut snapshot) };
 
 		assert_eq!(status, VoxitStatus::Ok);
 		assert_eq!(snapshot.platform, VoxitPlatformTag::MacOS);
@@ -262,6 +264,6 @@ mod tests {
 		assert_eq!(snapshot.dictation_state, VoxitDictationState::Idle);
 		assert_eq!(snapshot.rewrite_enabled, 1);
 
-		unsafe { voxit_host_session_destroy(handle) };
+		unsafe { crate::voxit_host_session_destroy(handle) };
 	}
 }
