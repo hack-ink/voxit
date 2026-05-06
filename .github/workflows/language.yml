@@ -85,6 +85,8 @@ jobs:
         run: cargo make fmt-rust-check
 
       - name: Run tests
+        env:
+          VOXIT_NATIVE_HOST_SIGN_IDENTITY: '-'
         run: cargo make test
 
   toml:

@@ -213,7 +213,7 @@ test -f "$APP_PATH/Contents/Info.plist"
 test -f "$APP_PATH/Contents/Resources/AppIcon.icns"
 test -f "$APP_PATH/Contents/Resources/StatusBarIcon.png"
 codesign --verify --deep --strict "$APP_PATH"
-codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep -q '^TeamIdentifier='
+codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep -Eq '^(TeamIdentifier=|Signature=adhoc)'
 plutil -extract CFBundleName raw "$APP_PATH/Contents/Info.plist" | grep -qx 'Voxit'
 plutil -extract CFBundleDisplayName raw "$APP_PATH/Contents/Info.plist" | grep -qx 'Voxit'
 plutil -extract CFBundleIdentifier raw "$APP_PATH/Contents/Info.plist" | grep -qx 'ink.hack.voxit'

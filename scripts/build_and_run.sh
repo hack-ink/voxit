@@ -98,6 +98,11 @@ resolve_signing_identity() {
 	local requested_identity identity_list identity
 
 	requested_identity="${VOXIT_NATIVE_HOST_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
+	if [[ "$requested_identity" == "-" ]]; then
+		RESOLVED_SIGN_IDENTITY="-"
+		return 0
+	fi
+
 	identity_list="$(security find-identity -v -p codesigning 2>/dev/null || true)"
 	if [[ -n "$requested_identity" ]]; then
 		while IFS= read -r line; do

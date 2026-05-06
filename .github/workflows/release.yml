@@ -46,6 +46,7 @@ jobs:
           VOXIT_NATIVE_HOST_RUST_PROFILE=final-release \
           VOXIT_NATIVE_HOST_SWIFT_CONFIGURATION=release \
           VOXIT_NATIVE_HOST_LOCKED=1 \
+          VOXIT_NATIVE_HOST_SIGN_IDENTITY=- \
             ./scripts/build_and_run.sh stage
           COMMON_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
           APP_PATH="$COMMON_ROOT/target/voxit-native-host/Voxit.app"
@@ -99,8 +100,8 @@ jobs:
           mkdir -p artifacts
           mv voxit-*/* artifacts/
           cd artifacts
-          sha256sum * | tee ../SHA256
-          md5sum * | tee ../MD5
+          sha256sum ./* | tee ../SHA256
+          md5sum ./* | tee ../MD5
           mv ../SHA256 .
           mv ../MD5 .
 
