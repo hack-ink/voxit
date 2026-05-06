@@ -18,8 +18,8 @@ AI dictation App for macOS (MVP scaffold).
 
 ### What is implemented in v1
 
-- Menubar dictation app on macOS with start/stop hotkey control.
-- ChatGPT login flow with browser OAuth as default and device-code fallback (if needed).
+- Swift menu bar dictation app on macOS with start/stop hotkey control.
+- ChatGPT login flow through OAuth device-code authorization.
 - Real-time pass-1 transcription from mic with committed/draft streaming assembly.
 - Pass-2 finalize pass using `gpt-4o-transcribe` for better punctuation and stability.
 - Optional Pass-3 rewrite for cleaner English output with numeric/proper noun protection.
@@ -37,7 +37,7 @@ V1 target is **macOS-first** and aligned to the English-only voice input design.
 - Scope: ✅ Native macOS mic capture + OpenAI model pipeline only.
 - Limitation: ✅ Linux/Windows build is intentionally disabled.
 - Limitation: ⚠️ Known gaps are documented in the
-  [Runtime Spec](docs/spec/runtime.md) (hotkey configurability, tray menu behavior,
+  [Runtime Spec](docs/spec/runtime.md) (runtime action wiring, config write-through,
   CPAL fallback robustness, and rollout cleanup items).
 
 ## Usage
@@ -61,14 +61,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-t
 sudo apt-get update
 sudo apt-get install <DEPENDENCIES>
 
-# Build the voxit package, and the binary will be available at `target/release/voxit`.
-cargo build --release -p voxit
+# Build the Swift native host and stage `Voxit.app`.
+./scripts/build_and_run.sh stage
 
-# If you are a macOS user and want to have a `Voxit.app`, run the following command.
-# Install `cargo-bundle` to pack the binary into an app.
-cargo install cargo-bundle
-# Pack the app, and the it will be available at `target/release/bundle/osx/Voxit.app`.
-cargo bundle --release -p voxit
+# Or build, stage, and launch the local app bundle.
+./scripts/build_and_run.sh run
 ```
 
 #### Download Pre-built Binary
@@ -138,7 +135,9 @@ First-run onboarding checklist:
 
 For the full guided sequence, see [First Run](docs/runbook/first-run.md).
 
-The app saves updates to the same `config.toml` path when settings are changed.
+Runtime configuration remains sourced from `config.toml`. The current Swift Settings
+window persists shell preferences in macOS `UserDefaults`; writing those settings back
+through the Rust config path is a tracked runtime gap.
 
 ### Interaction
 
@@ -166,7 +165,9 @@ The app saves updates to the same `config.toml` path when settings are changed.
 
 ### Implementation snapshot
 
-- `eframe/egui` panel + menubar entrypoint.
+- Current app: Swift/SwiftUI menu bar host under `native/macos-host/`.
+- Rust Core remains the runtime owner, exposed to Swift through C ABI glue under
+  `packages/voxit-host-ffi/`.
 - Dedicated auth/session/config/rewrite/paste pipeline and typed application state.
 - macOS frontmost-app capture + clipboard/command-paste integration.
 

@@ -1,0 +1,17 @@
+[package]
+authors.workspace    = true
+description          = "Thin C ABI bridge for the Voxit native host."
+edition.workspace    = true
+homepage.workspace   = true
+license.workspace    = true
+name                 = "voxit-host-ffi"
+readme.workspace     = true
+repository.workspace = true
+version.workspace    = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+path       = "src/lib.rs"
+
+[dependencies]
+voxit-core = { path = "../voxit-core" }

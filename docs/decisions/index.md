@@ -25,4 +25,5 @@ Question this index answers: "why is it shaped this way?"
 
 ## Current decisions
 
-- No accepted decision records are currently checked in under this lane.
+- [`native-ui-boundary.md`](./native-ui-boundary.md) records the Rust Core plus
+  platform-native UI boundary for the macOS-first host.

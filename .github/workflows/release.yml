@@ -40,22 +40,16 @@ jobs:
           cache: true
           components: rustfmt, clippy
 
-      - name: Install cargo-bundle
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-bundle
-
-      - name: Add target
-        run: rustup target add ${{ matrix.target.name }}
-
-      - name: Build
-        run: cargo build --profile final-release --locked --target ${{ matrix.target.name }} -p voxit
-
       - name: Bundle and Pack (macOS app)
         if: matrix.target.os == 'macos-latest'
         run: |
-          cargo bundle --profile final-release --target ${{ matrix.target.name }} -p voxit
-          APP_PATH="target/${{ matrix.target.name }}/bundle/osx/Voxit.app"
+          VOXIT_NATIVE_HOST_RUST_PROFILE=final-release \
+          VOXIT_NATIVE_HOST_SWIFT_CONFIGURATION=release \
+          VOXIT_NATIVE_HOST_LOCKED=1 \
+          VOXIT_NATIVE_HOST_SIGN_IDENTITY=- \
+            ./scripts/build_and_run.sh stage
+          COMMON_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+          APP_PATH="$COMMON_ROOT/target/voxit-native-host/Voxit.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "Could not locate Voxit.app at $APP_PATH"
             exit 1
@@ -106,8 +100,8 @@ jobs:
           mkdir -p artifacts
           mv voxit-*/* artifacts/
           cd artifacts
-          sha256sum * | tee ../SHA256
-          md5sum * | tee ../MD5
+          sha256sum ./* | tee ../SHA256
+          md5sum ./* | tee ../MD5
           mv ../SHA256 .
           mv ../MD5 .
 
