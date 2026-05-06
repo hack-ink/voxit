@@ -6,6 +6,7 @@ pub mod inference;
 pub mod openai;
 pub mod realtime;
 pub mod transcript;
+pub mod ui_model;
 
 mod audio_payload;
 mod providers;
@@ -24,4 +25,8 @@ pub use self::{
 		REALTIME_ENDPOINT, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig,
 	},
 	transcript::{TranscriptAssembler, TranscriptEvent, TranscriptSnapshot},
+	ui_model::{
+		AuthMethod, AuthSurfaceState, DictationSurfaceState, HotkeySurfaceMode, NativeHostSnapshot,
+		PlatformHost,
+	},
 };

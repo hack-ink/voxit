@@ -1,0 +1,4 @@
+module CVoxitHostFFI [system] {
+	header "include/voxit_host_ffi_shim.h"
+	export *
+}

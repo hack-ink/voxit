@@ -21,8 +21,11 @@ Defines:
 
 ## 1) Runtime Scope and Boundaries
 
-- Build entrypoint uses `eframe::run_native` and renders an always-on-top panel
-  controlled by system tray visibility and a global hotkey.
+- Build entrypoint is the SwiftPM native macOS host under `native/macos-host/`.
+- Voxit uses Rust Core plus a platform host: shared runtime and platform-neutral model
+  contracts stay in Rust crates, while Swift owns the macOS UI.
+- The staged app bundle is a menu bar utility (`LSUIElement = true`) with a SwiftUI
+  `MenuBarExtra` and an on-demand Voxit window.
 - The app supports English-first behavior and configuration defaults (`language = "en"`).
 - No speech is injected into target apps while Pass1 is running; text is only pasted
   after Pass2 or Pass3 completion.
@@ -53,12 +56,12 @@ State transitions:
 
 ## 3) Authentication Contract
 
-- Default login is browser OAuth flow to ChatGPT and must open a browser callback page
-  first.
-- Device-code path is available and should be used as fallback or manual fallback.
+- Default login is ChatGPT OAuth via device-code authorization.
+- Browser callback OAuth is not part of the active V1 login surface.
 - Token acquisition flow:
-  - open browser login via OAuth
-  - exchange authorization token and persist auth locally
+  - show the device code and verification URL
+  - poll until ChatGPT authorization completes or fails
+  - exchange the authorized device session and persist auth locally
   - fallback path uses `OPENAI_API_KEY` only when no OAuth token exists
 - Storage:
   - preferred: keyring
@@ -155,14 +158,17 @@ State transitions:
   - supported mode switch: toggle or hold
   - currently recognized physical combo: `Ctrl+Shift+Space`
   - configuration exposes `hotkey.chord` for future use
-- Tray behavior:
-  - left click toggles panel visibility
-  - no menu-driven start, stop, rewrite, or quit actions are implemented in this
-    version
+- Menu bar behavior:
+  - `MenuBarExtra` exposes `Open Voxit` (`Cmd+O`), `Settings...` (`Cmd+,`),
+    `Refresh Status` (`Cmd+R`), and `Quit Voxit` (`Cmd+Q`).
+  - `Start Dictation` displays the configured dictation shortcut presentation, but
+    remains disabled until the Swift menu action is wired to the Rust runtime command.
+  - `Settings...` opens a dedicated AppKit-hosted Settings window.
+  - The Settings window handles `Cmd+W` to close and `Cmd+Q` to terminate.
 
 ## 9) UI and Onboarding Contract
 
-- Panel contains:
+- UI contains:
   - auth status and sign-in actions
   - runtime controls (start/stop, rewrite toggle, hotkey mode)
   - live stream sections (committed plus draft)
@@ -177,6 +183,9 @@ State transitions:
   re-check in Voxit before continuing.
 - "Paste raw now" is always available when finalization or rewrite is active and should
   bypass Pass3.
+- The Swift native host must render platform-neutral Rust model snapshots from
+  `packages/voxit-core/` through `packages/voxit-host-ffi/` instead of defining a
+  separate UI state machine.
 
 ## 10) Configuration Contract
 
@@ -205,13 +214,19 @@ On load:
 - non-zero `audio.input_device_id` requests that device; if unavailable at startup,
   Voxit falls back to default input
 
+Current Swift Settings window:
+
+- persists shell preferences in macOS `UserDefaults`
+- does not yet write those preferences through the Rust `config.toml` path
+
 ## 11) CI and Release
 
 - `language.yml` is macOS-only for lint, format, and test checks.
 - Release packaging matrix is restricted to `aarch64-apple-darwin` and comments out
   Linux and Windows jobs.
-- Packaging uses `cargo bundle --manifest-path apps/voxit/Cargo.toml` (or `cargo bundle
-  -p voxit`) and zips `target/<target>/bundle/osx/Voxit.app` as `voxit-<target>.zip`.
+- Packaging uses `scripts/build_and_run.sh stage` to build `packages/voxit-host-ffi`,
+  build the SwiftPM host, stage `target/voxit-native-host/Voxit.app`, and zip it as
+  `voxit-<target>.zip`.
 
 ## 12) Observability and Logs
 
@@ -222,7 +237,9 @@ On load:
 
 ## 13) Known Gaps
 
-- Tray menu controls are not implemented; only click-to-toggle panel exists.
+- Swift Settings write-through to `config.toml` is not implemented yet.
+- Menu-driven start/stop dictation is visible but not wired to the Rust runtime command
+  yet.
 - Configured hotkey chord string is not yet mapped; current hardcoded gesture is
   `Ctrl+Shift+Space` only.
 - CPAL fallback capture is not implemented despite a configuration option; only the

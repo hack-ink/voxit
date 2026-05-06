@@ -28,15 +28,14 @@ Verification:
 ## 1. Launch Voxit
 
 - Start the app from `Voxit.app` or a local debug build.
-- If you are building from source, use the workspace manifests under `apps/` and
-  `packages/` rather than an old single-crate entrypoint.
+- If you are building from source, run `./scripts/build_and_run.sh run` from the
+  repository root to build, stage, and launch the Swift native host.
 
 ## 2. Sign in
 
-- Open the auth controls in the panel.
-- Use the default browser OAuth flow first.
-- Complete the callback flow and return to the app.
-- If browser OAuth is unavailable, use the device-code fallback path.
+- Open the auth controls in the Voxit window.
+- Use the default ChatGPT device-code OAuth flow.
+- Complete authorization in the browser using the visible code, then return to the app.
 
 ## 3. Grant required macOS permissions
 
@@ -49,13 +48,16 @@ Verification:
 
 ## 4. Confirm runtime configuration
 
+- Open **Settings...** from the menu bar menu or press `Cmd+,` to confirm shell
+  preferences and permission shortcuts are available.
 - Check the config file at:
 
 ```text
 $HOME/Library/Application Support/voxit/config.toml
 ```
 
-- Confirm the default hotkey and audio device settings look reasonable for the machine.
+- Confirm the default runtime hotkey and audio device settings look reasonable for the
+  machine.
 - If you need an explicit microphone, refresh the device list and select it before the
   first real dictation run.
 
@@ -69,7 +71,7 @@ $HOME/Library/Application Support/voxit/config.toml
 
 ## 6. Failure handling
 
-- If sign-in stalls, reopen the auth surface and retry with the visible-window path.
+- If sign-in stalls, reopen the auth surface and retry the device-code flow.
 - If a permission does not update, grant it in macOS System Settings and then re-check
   from Voxit.
 - If paste fails, verify Accessibility and Input Monitoring first before debugging the

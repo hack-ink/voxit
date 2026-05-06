@@ -79,7 +79,7 @@ jobs:
         run: cargo make fmt-rust-check
 
       - name: Run tests
-        run: cargo make test-rust
+        run: cargo make test
 
   toml:
     name: TOML checks

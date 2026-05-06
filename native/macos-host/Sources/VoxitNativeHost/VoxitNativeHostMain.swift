@@ -1,0 +1,3 @@
+import VoxitNativeHostKit
+
+VoxitNativeHostApp.main()

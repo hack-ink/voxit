@@ -7,6 +7,8 @@
 # | lint-fix        | composite |     |
 # | lint-rust       | command   |     |
 # | lint-fix-rust   | extend    |     |
+# | lint-swift      | composite |     |
+# | lint-fix-swift  | composite |     |
 # | lint-vstyle     | command   |     |
 # | lint-fix-vstyle | command   |     |
 
@@ -14,6 +16,7 @@
 workspace = false
 dependencies = [
 	"lint-rust",
+	"lint-swift",
 	"lint-vstyle",
 ]
 
@@ -21,6 +24,7 @@ dependencies = [
 workspace = false
 dependencies = [
 	"lint-fix-rust",
+	"lint-fix-swift",
 	"lint-fix-vstyle",
 ]
 
@@ -49,6 +53,32 @@ args = [
 	"unused-crate-dependencies",
 	"-D",
 	"warnings",
+]
+
+[tasks.lint-swift]
+workspace = false
+dependencies = [
+	"lint-swift-format",
+	"build-swift-strict",
+]
+
+[tasks.lint-fix-swift]
+workspace = false
+dependencies = [
+	"fmt-swift",
+	"build-swift-strict",
+]
+
+[tasks.lint-swift-format]
+workspace = false
+command = "swift"
+args = [
+	"format",
+	"lint",
+	"--recursive",
+	"--strict",
+	"--parallel",
+	"native/macos-host/Sources",
 ]
 
 [tasks.lint-fix-rust]
@@ -104,13 +134,19 @@ args = [
 # Test
 # | task      | type      | cwd |
 # | --------- | --------- | --- |
-# | test      | composite |     |
-# | test-rust | command   |     |
+# | test                         | composite | |
+# | test-rust                    | command   | |
+# | test-host-ffi-header         | command   | |
+# | test-macos-native-host       | command   | |
+# | test-macos-native-host-stage | command   | |
 
 [tasks.test]
 workspace = false
 dependencies = [
 	"test-rust",
+	"test-host-ffi-header",
+	"test-macos-native-host",
+	"test-macos-native-host-stage",
 ]
 
 [tasks.test-rust]
@@ -124,6 +160,67 @@ args = [
 	"--all-features",
 ]
 
+[tasks.test-host-ffi-header]
+workspace = false
+command = "clang"
+args = [
+	"-std=c11",
+	"-fsyntax-only",
+	"-I",
+	"packages/voxit-host-ffi/include",
+	"packages/voxit-host-ffi/tests/header_smoke.c",
+]
+
+[tasks.build-host-ffi-staticlib]
+workspace = false
+script = '''
+MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p voxit-host-ffi
+'''
+
+[tasks.build-swift-strict]
+workspace = false
+dependencies = [
+	"build-host-ffi-staticlib",
+]
+script = '''
+VOXIT_HOST_FFI_LIB_DIR="$PWD/target/debug" \
+swift build --package-path native/macos-host \
+	--explicit-target-dependency-import-check error \
+	-Xswiftc -warnings-as-errors \
+	-Xswiftc -strict-concurrency=complete
+'''
+
+[tasks.test-macos-native-host]
+workspace = false
+dependencies = [
+	"build-host-ffi-staticlib",
+]
+script = '''
+VOXIT_HOST_FFI_LIB_DIR="$PWD/target/debug" \
+swift run --package-path native/macos-host VoxitHostBridgeProbe
+'''
+
+[tasks.test-macos-native-host-stage]
+workspace = false
+script = '''
+./scripts/build_and_run.sh stage
+COMMON_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+STAGE_DIR="${VOXIT_NATIVE_HOST_STAGE_DIR:-$COMMON_ROOT/target/voxit-native-host}"
+APP_PATH="$STAGE_DIR/Voxit.app"
+test -d "$APP_PATH"
+test -x "$APP_PATH/Contents/MacOS/VoxitNativeHost"
+test -f "$APP_PATH/Contents/Info.plist"
+test -f "$APP_PATH/Contents/Resources/AppIcon.icns"
+test -f "$APP_PATH/Contents/Resources/StatusBarIcon.png"
+codesign --verify --deep --strict "$APP_PATH"
+codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep -q '^TeamIdentifier='
+plutil -extract CFBundleName raw "$APP_PATH/Contents/Info.plist" | grep -qx 'Voxit'
+plutil -extract CFBundleDisplayName raw "$APP_PATH/Contents/Info.plist" | grep -qx 'Voxit'
+plutil -extract CFBundleIdentifier raw "$APP_PATH/Contents/Info.plist" | grep -qx 'ink.hack.voxit'
+plutil -extract CFBundleIconFile raw "$APP_PATH/Contents/Info.plist" | grep -qx 'AppIcon'
+plutil -extract LSUIElement raw "$APP_PATH/Contents/Info.plist" | grep -qx 'true'
+'''
+
 
 # Format
 # | task           | type      | cwd |
@@ -132,6 +229,8 @@ args = [
 # | fmt-check      | composite |     |
 # | fmt-rust       | command   |     |
 # | fmt-rust-check | extend    |     |
+# | fmt-swift      | command   |     |
+# | fmt-swift-check| command   |     |
 # | fmt-toml       | command   |     |
 # | fmt-toml-check | extend    |     |
 
@@ -139,6 +238,7 @@ args = [
 workspace = false
 dependencies = [
 	"fmt-rust",
+	"fmt-swift",
 	"fmt-toml",
 ]
 
@@ -146,6 +246,7 @@ dependencies = [
 workspace = false
 dependencies = [
 	"fmt-rust-check",
+	"fmt-swift-check",
 	"fmt-toml-check",
 ]
 
@@ -156,6 +257,22 @@ script = "cargo +nightly fmt --all"
 [tasks.fmt-rust-check]
 extend = "fmt-rust"
 script = "cargo +nightly fmt --all -- --check"
+
+[tasks.fmt-swift]
+workspace = false
+command = "swift"
+args = [
+	"format",
+	"format",
+	"--in-place",
+	"--recursive",
+	"--parallel",
+	"native/macos-host/Sources",
+]
+
+[tasks.fmt-swift-check]
+workspace = false
+extend = "lint-swift-format"
 
 [tasks.fmt-toml]
 workspace = false
