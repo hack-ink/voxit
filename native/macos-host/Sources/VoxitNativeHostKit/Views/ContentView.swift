@@ -3,7 +3,7 @@ import VoxitHostBridge
 
 public struct ContentView: View {
   @ObservedObject var store: HostStore
-  @SceneStorage("selection") private var selection: NavigationItem = .dictation
+  @SceneStorage("selection") private var selection: NavigationItem = .activity
 
   public init(store: HostStore) {
     self.store = store

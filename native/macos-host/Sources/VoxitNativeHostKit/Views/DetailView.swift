@@ -17,12 +17,16 @@ struct DetailView: View {
         }
 
         switch selection {
-        case .dictation:
-          DictationDetail(snapshot: snapshot)
-        case .auth:
-          AuthDetail(snapshot: snapshot)
-        case .audio:
-          AudioDetail()
+        case .activity:
+          ActivityDetail(snapshot: snapshot)
+        case .appRules:
+          AppRulesDetail()
+        case .profiles:
+          ProfilesDetail()
+        case .glossary:
+          GlossaryDetail()
+        case .promptLab:
+          PromptLabDetail()
         }
       }
       .padding(24)
@@ -35,24 +39,11 @@ struct DetailView: View {
     VStack(alignment: .leading, spacing: 5) {
       Text(selection.title)
         .font(.largeTitle.weight(.semibold))
-      Text(subtitle)
-        .foregroundStyle(.secondary)
-    }
-  }
-
-  private var subtitle: String {
-    switch selection {
-    case .dictation:
-      return "Record, finalize, rewrite, and paste."
-    case .auth:
-      return "ChatGPT device-code authorization."
-    case .audio:
-      return "Microphone input and permission state."
     }
   }
 }
 
-private struct DictationDetail: View {
+private struct ActivityDetail: View {
   var snapshot: HostSnapshot?
 
   var body: some View {
@@ -63,9 +54,19 @@ private struct DictationDetail: View {
         systemImage: "waveform"
       )
       StatusCard(
-        title: "Rewrite",
-        value: snapshot?.rewriteEnabled == true ? "Enabled" : "Disabled",
-        systemImage: "wand.and.stars"
+        title: "Auth",
+        value: snapshot?.authState.label ?? "Loading",
+        systemImage: "person.crop.circle.badge.checkmark"
+      )
+      StatusCard(
+        title: "Profile",
+        value: "Fast Dictation",
+        systemImage: "person.text.rectangle"
+      )
+      StatusCard(
+        title: "Policy",
+        value: "Insert Text",
+        systemImage: "text.cursor"
       )
     }
 
@@ -79,34 +80,57 @@ private struct DictationDetail: View {
   }
 }
 
-private struct AuthDetail: View {
-  var snapshot: HostSnapshot?
-
+private struct AppRulesDetail: View {
   var body: some View {
     LabeledContentGrid {
       StatusCard(
-        title: "Status",
-        value: snapshot?.authState.label ?? "Loading",
-        systemImage: "person.crop.circle.badge.checkmark"
+        title: "Work Tracker",
+        value: "Linear, GitHub",
+        systemImage: "checklist"
       )
       StatusCard(
-        title: "Method",
-        value: snapshot?.authMethod.label ?? "Device Code",
-        systemImage: "rectangle.and.pencil.and.ellipsis"
+        title: "Messaging",
+        value: "Slack, Discord",
+        systemImage: "bubble.left.and.bubble.right"
+      )
+      StatusCard(
+        title: "Code Editor",
+        value: "Cursor, VS Code, Xcode",
+        systemImage: "curlybraces"
+      )
+      StatusCard(
+        title: "Terminal",
+        value: "Confirm",
+        systemImage: "terminal"
       )
     }
-
-    Button("Sign In", systemImage: "arrow.right.circle") {}
-      .buttonStyle(.borderedProminent)
-      .disabled(true)
   }
 }
 
-private struct AudioDetail: View {
+private struct ProfilesDetail: View {
   var body: some View {
     LabeledContentGrid {
-      StatusCard(title: "Input", value: "System Default", systemImage: "mic")
-      StatusCard(title: "Permission", value: "Unknown", systemImage: "checkmark.shield")
+      StatusCard(title: "Fast Dictation", value: "Minimal", systemImage: "bolt")
+      StatusCard(title: "Context Rewrite", value: "Low", systemImage: "wand.and.stars")
+      StatusCard(title: "Voice Intent", value: "Medium", systemImage: "arrow.triangle.branch")
+    }
+  }
+}
+
+private struct GlossaryDetail: View {
+  var body: some View {
+    LabeledContentGrid {
+      StatusCard(title: "Custom Terms", value: "None", systemImage: "text.book.closed")
+      StatusCard(title: "Entity Guard", value: "Numbers, dates, money", systemImage: "number")
+    }
+  }
+}
+
+private struct PromptLabDetail: View {
+  var body: some View {
+    LabeledContentGrid {
+      StatusCard(title: "Comparison", value: "No Runs", systemImage: "rectangle.split.2x1")
+      StatusCard(title: "Reasoning", value: "Profile Default", systemImage: "brain")
     }
   }
 }

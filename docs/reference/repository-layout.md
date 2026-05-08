@@ -16,10 +16,12 @@ files.
 ## Top-level surfaces
 
 - `native/macos-host/` holds the SwiftPM native macOS host. It owns platform UI
-  composition, the menu bar extra, and links Rust through the host FFI static library.
+  composition, the menu bar extra, the Voxit control-center window, the Settings
+  window, and links Rust through the host FFI static library.
 - `packages/voxit-core/` holds the shared runtime logic, auth, OpenAI integration, and
-  dictation pipeline code. Platform-neutral UI model types also live here so hosts do
-  not invent divergent state names.
+  dictation pipeline code. Platform-neutral UI model types and contextual voice
+  planning contracts also live here so hosts do not invent divergent state names,
+  profile routing, or output policies.
 - `packages/voxit-audio/` holds audio-capture specific functionality.
 - `packages/voxit-host-ffi/` holds the thin C ABI consumed by `native/macos-host/`.
 - `packages/voxit-macos/` holds macOS-specific integration surfaces.
@@ -37,7 +39,8 @@ files.
 - Runtime authority stays in the application and package crates plus the governing specs
   under `docs/spec/`.
 - Native UI code may depend on `packages/voxit-host-ffi/`, but it must not duplicate
-  provider/auth/audio runtime policy already owned by Rust core crates.
+  provider/auth/audio runtime policy or contextual voice routing already owned by Rust
+  core crates.
 - `docs/runbook/`, `docs/reference/`, and `docs/decisions/` must not override runtime
   or configuration authority.
 - `Makefile.toml` is the source of truth for named repository tasks.

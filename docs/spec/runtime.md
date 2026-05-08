@@ -171,12 +171,14 @@ State transitions:
 
 ## 9) UI and Onboarding Contract
 
-- UI contains:
-  - auth status and sign-in actions
-  - runtime controls (start/stop, rewrite toggle, hotkey mode)
-  - live stream sections (committed plus draft)
-  - final transcript sections
-  - onboarding checklist statuses for microphone, accessibility, and input monitoring
+- UI surfaces are split by responsibility:
+  - menu bar: always-available status and control
+  - recording HUD: live session state, transcript preview, active profile, and paste
+    controls
+  - Voxit control-center window: activity, app rules, profiles, glossary, prompt lab,
+    and debug/evaluation surfaces
+  - Settings window: app preferences, shortcuts, microphone, permissions, account
+    defaults, privacy, logging, and notifications
 - Onboarding checklist provides request actions for required macOS permissions. The UI
   prompts permission requests in order:
   - Microphone: probe-based request and retry loop when denied
@@ -188,7 +190,7 @@ State transitions:
   bypass Pass3.
 - The Swift native host must render platform-neutral Rust model snapshots from
   `packages/voxit-core/` through `packages/voxit-host-ffi/` instead of defining a
-  separate UI state machine.
+  separate UI state machine, contextual routing policy, or prompt profile registry.
 
 ## 10) Configuration Contract
 

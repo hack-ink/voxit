@@ -1,9 +1,11 @@
 import Foundation
 
 public enum NavigationItem: String, CaseIterable, Identifiable, Sendable {
-  case dictation
-  case auth
-  case audio
+  case activity
+  case appRules
+  case profiles
+  case glossary
+  case promptLab
 
   public var id: String {
     rawValue
@@ -11,23 +13,31 @@ public enum NavigationItem: String, CaseIterable, Identifiable, Sendable {
 
   var title: String {
     switch self {
-    case .dictation:
-      return "Dictation"
-    case .auth:
-      return "ChatGPT"
-    case .audio:
-      return "Audio"
+    case .activity:
+      return "Activity"
+    case .appRules:
+      return "App Rules"
+    case .profiles:
+      return "Profiles"
+    case .glossary:
+      return "Glossary"
+    case .promptLab:
+      return "Prompt Lab"
     }
   }
 
   var systemImage: String {
     switch self {
-    case .dictation:
+    case .activity:
       return "waveform"
-    case .auth:
-      return "person.crop.circle.badge.checkmark"
-    case .audio:
-      return "mic"
+    case .appRules:
+      return "rectangle.3.group"
+    case .profiles:
+      return "person.text.rectangle"
+    case .glossary:
+      return "text.book.closed"
+    case .promptLab:
+      return "slider.horizontal.3"
     }
   }
 }
