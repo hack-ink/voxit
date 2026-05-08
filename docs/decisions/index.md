@@ -27,3 +27,6 @@ Question this index answers: "why is it shaped this way?"
 
 - [`native-ui-boundary.md`](./native-ui-boundary.md) records the Rust Core plus
   platform-native UI boundary for the macOS-first host.
+- [`contextual-voice-layer.md`](./contextual-voice-layer.md) records the
+  menu bar-first contextual voice input product shape and main-window versus Settings
+  split.
