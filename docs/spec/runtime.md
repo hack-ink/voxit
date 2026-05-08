@@ -24,6 +24,9 @@ Defines:
 - Build entrypoint is the SwiftPM native macOS host under `native/macos-host/`.
 - Voxit uses Rust Core plus a platform host: shared runtime and platform-neutral model
   contracts stay in Rust crates, while Swift owns the macOS UI.
+- Context-aware voice behavior is governed by
+  [`contextual-voice.md`](./contextual-voice.md). The runtime must treat raw
+  transcription as one step in a broader contextual voice input pipeline.
 - The staged app bundle is a menu bar utility (`LSUIElement = true`) with a SwiftUI
   `MenuBarExtra` and an on-demand Voxit window.
 - The app supports English-first behavior and configuration defaults (`language = "en"`).
