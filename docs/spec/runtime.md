@@ -242,6 +242,13 @@ Current Swift Settings window:
 
 ## 13) Known Gaps
 
+- Contextual routing is defined in Rust Core, but focused-app context capture,
+  `VoiceSessionPlan` FFI exposure, and profile-backed Swift rendering are not wired
+  yet.
+- The Voxit control-center window currently exposes the target Activity, App Rules,
+  Profiles, Glossary, and Prompt Lab navigation shape, but most values are placeholder
+  UI until the Rust-owned contextual session plan crosses the host boundary.
+- The recording HUD is a target surface in the UI contract and is not implemented yet.
 - Swift Settings write-through to `config.toml` is not implemented yet.
 - Menu-driven start/stop dictation is visible but not wired to the Rust runtime command
   yet.
