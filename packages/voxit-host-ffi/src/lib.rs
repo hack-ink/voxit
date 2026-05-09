@@ -10,9 +10,10 @@ use std::{
 };
 
 #[cfg(target_os = "macos")] use voxit_audio::Recorder;
+#[cfg(target_os = "macos")] use voxit_core::RewriteSettings;
 use voxit_core::{
 	self, Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
-	RewriteSettings, VoiceSessionPlan,
+	VoiceSessionPlan,
 	contextual::{
 		PromptProfileKind, VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort,
 	},
@@ -778,6 +779,7 @@ fn set_error(handle: &mut VoxitHostSessionHandle, message: impl Into<String>) {
 	handle.last_error = message.into();
 }
 
+#[cfg(target_os = "macos")]
 fn rewrite_settings(handle: &VoxitHostSessionHandle) -> RewriteSettings {
 	RewriteSettings {
 		guard_protected_tokens: handle.config.rewrite.guard_numbers,

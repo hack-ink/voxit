@@ -14,8 +14,8 @@ crate-type = ["rlib", "staticlib"]
 path       = "src/lib.rs"
 
 [dependencies]
-voxit-audio = { workspace = true }
-voxit-core  = { workspace = true }
+voxit-core = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+voxit-audio = { workspace = true }
 voxit-macos = { workspace = true }
