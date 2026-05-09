@@ -1,8 +1,8 @@
 //! macOS target app capture and activation helpers.
 
-#[cfg(not(target_os = "macos"))] use std::io::{self, Error, ErrorKind};
 #[cfg(target_os = "macos")] use std::ptr;
-use std::{ffi::c_void, mem, thread, time::Duration};
+use std::time::Duration;
+#[cfg(target_os = "macos")] use std::{ffi::c_void, mem, thread};
 #[cfg(target_os = "macos")] use std::{
 	io::Write as _,
 	process::{Command, Stdio},
@@ -13,7 +13,7 @@ use std::{ffi::c_void, mem, thread, time::Duration};
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 #[cfg(target_os = "macos")]
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-use url::Url;
+#[cfg(target_os = "macos")] use url::Url;
 
 #[cfg(target_os = "macos")]
 type CfDictionaryRef = *const c_void;
@@ -50,6 +50,7 @@ impl TargetApp {
 			&& !self.selected_text_present
 	}
 
+	#[cfg(target_os = "macos")]
 	fn log_id(&self) -> String {
 		if let Some(bundle_id) = self.bundle_id.as_ref().filter(|value| !value.is_empty()) {
 			return bundle_id.clone();
@@ -62,6 +63,7 @@ impl TargetApp {
 		"unknown".to_string()
 	}
 
+	#[cfg(target_os = "macos")]
 	fn matches(&self, other: &Self) -> bool {
 		if self.is_empty() || other.is_empty() {
 			return false;
@@ -272,8 +274,6 @@ pub fn capture_frontmost_app() -> Option<TargetApp> {
 /// Capture the frontmost app from non-macOS builds.
 #[cfg(not(target_os = "macos"))]
 pub fn capture_frontmost_app() -> Option<TargetApp> {
-	let _ = Error::new(ErrorKind::Unsupported, "frontmost capture is macOS-only");
-
 	None
 }
 
@@ -393,11 +393,6 @@ fn capture_frontmost_app_impl() -> Result<TargetApp, String> {
 	})
 }
 
-#[cfg(not(target_os = "macos"))]
-fn capture_frontmost_app_impl() -> Result<TargetApp, String> {
-	Err("frontmost capture is not available on non-macOS".to_string())
-}
-
 #[cfg(target_os = "macos")]
 fn activation_script(target: &TargetApp) -> Option<String> {
 	if let Some(bundle_id) = target.bundle_id.as_deref().filter(|value| !value.is_empty()) {
@@ -405,11 +400,6 @@ fn activation_script(target: &TargetApp) -> Option<String> {
 	}
 
 	target.app_name.as_deref().filter(|value| !value.is_empty()).map(activation_script_for_app_name)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn activation_script(_target: &TargetApp) -> Option<String> {
-	None
 }
 
 #[cfg(target_os = "macos")]
@@ -492,15 +482,11 @@ fn browser_url_script(bundle_id: Option<&str>, app_name: Option<&str>) -> Option
 	None
 }
 
+#[cfg(target_os = "macos")]
 fn parse_domain(raw_url: &str) -> Option<String> {
 	let url = Url::parse(raw_url.trim()).ok()?;
 
 	url.host_str().map(|domain| domain.trim_start_matches("www.").to_ascii_lowercase())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn execute_applescript_raw(_script: &str) -> Result<String, String> {
-	Err("activation is not available on non-macOS".to_string())
 }
 
 #[cfg(target_os = "macos")]
