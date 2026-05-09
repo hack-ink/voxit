@@ -10,9 +10,9 @@ repository.workspace = true
 version.workspace    = true
 
 [dependencies]
-hound   = { version = "3.5" }
-tracing = { version = "0.1" }
+hound   = { workspace = true }
+tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-coreaudio           = { package = "coreaudio-rs", version = "0.14" }
-objc2-audio-toolbox = { version = "0.3" }
+coreaudio           = { workspace = true }
+objc2-audio-toolbox = { workspace = true }
