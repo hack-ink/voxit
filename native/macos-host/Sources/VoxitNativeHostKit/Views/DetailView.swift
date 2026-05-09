@@ -22,7 +22,7 @@ struct DetailView: View {
         case .appRules:
           AppRulesDetail()
         case .profiles:
-          ProfilesDetail()
+          ProfilesDetail(snapshot: snapshot)
         case .glossary:
           GlossaryDetail()
         case .promptLab:
@@ -60,12 +60,22 @@ private struct ActivityDetail: View {
       )
       StatusCard(
         title: "Profile",
-        value: "Fast Dictation",
+        value: snapshot?.promptProfileKind.label ?? "Loading",
         systemImage: "person.text.rectangle"
       )
       StatusCard(
-        title: "Policy",
-        value: "Insert Text",
+        title: "Tier",
+        value: snapshot?.voiceTier.label ?? "Loading",
+        systemImage: "square.stack.3d.up"
+      )
+      StatusCard(
+        title: "Reasoning",
+        value: snapshot?.reasoningEffort.label ?? "Loading",
+        systemImage: "brain"
+      )
+      StatusCard(
+        title: "Output",
+        value: snapshot?.outputPolicy.label ?? "Loading",
         systemImage: "text.cursor"
       )
     }
@@ -108,9 +118,20 @@ private struct AppRulesDetail: View {
 }
 
 private struct ProfilesDetail: View {
+  var snapshot: HostSnapshot?
+
   var body: some View {
     LabeledContentGrid {
-      StatusCard(title: "Fast Dictation", value: "Minimal", systemImage: "bolt")
+      StatusCard(
+        title: "Current",
+        value: snapshot?.promptProfileKind.label ?? "Loading",
+        systemImage: "scope"
+      )
+      StatusCard(
+        title: "Reasoning",
+        value: snapshot?.reasoningEffort.label ?? "Loading",
+        systemImage: "brain"
+      )
       StatusCard(title: "Context Rewrite", value: "Low", systemImage: "wand.and.stars")
       StatusCard(title: "Voice Intent", value: "Medium", systemImage: "arrow.triangle.branch")
     }

@@ -51,3 +51,63 @@ extension HotkeyMode {
     }
   }
 }
+
+extension PromptProfileKind {
+  var label: String {
+    switch self {
+    case .fastDictation:
+      return "Fast Dictation"
+    case .messaging:
+      return "Messaging"
+    case .mail:
+      return "Mail"
+    case .codeEditor:
+      return "Code Editor"
+    case .terminal:
+      return "Terminal"
+    case .workTracker:
+      return "Work Tracker"
+    }
+  }
+}
+
+extension VoiceInteractionTier {
+  var label: String {
+    switch self {
+    case .fastDictation:
+      return "Fast Dictation"
+    case .contextRewrite:
+      return "Context Rewrite"
+    case .voiceIntent:
+      return "Voice Intent"
+    }
+  }
+}
+
+extension VoiceReasoningEffort {
+  var label: String {
+    switch self {
+    case .minimal:
+      return "Minimal"
+    case .low:
+      return "Low"
+    case .medium:
+      return "Medium"
+    case .high:
+      return "High"
+    }
+  }
+}
+
+extension VoiceOutputPolicy {
+  var label: String {
+    switch self {
+    case .insertText:
+      return "Insert Text"
+    case .previewBeforeInsert:
+      return "Preview"
+    case .confirmBeforeAction:
+      return "Confirm"
+    }
+  }
+}
