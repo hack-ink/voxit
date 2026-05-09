@@ -1,5 +1,72 @@
 # Rust workspace tasks.
 
+# Format
+# | task            | type      | cwd |
+# | --------------- | --------- | --- |
+# | fmt             | composite |     |
+# | fmt-check       | composite |     |
+# | fmt-rust        | command   |     |
+# | fmt-rust-check  | extend    |     |
+# | fmt-swift       | command   |     |
+# | fmt-swift-check | command   |     |
+# | fmt-toml        | command   |     |
+# | fmt-toml-check  | extend    |     |
+
+[tasks.fmt]
+workspace = false
+dependencies = [
+	"fmt-rust",
+	"fmt-swift",
+	"fmt-toml",
+]
+
+[tasks.fmt-check]
+workspace = false
+dependencies = [
+	"fmt-rust-check",
+	"fmt-swift-check",
+	"fmt-toml-check",
+]
+
+[tasks.fmt-rust]
+workspace = false
+script = "cargo +nightly fmt --all"
+
+[tasks.fmt-rust-check]
+extend = "fmt-rust"
+script = "cargo +nightly fmt --all -- --check"
+
+[tasks.fmt-swift]
+workspace = false
+command = "swift"
+args = [
+	"format",
+	"format",
+	"--in-place",
+	"--recursive",
+	"--parallel",
+	"native/macos-host/Sources",
+]
+
+[tasks.fmt-swift-check]
+workspace = false
+extend = "lint-swift-format"
+
+[tasks.fmt-toml]
+workspace = false
+command = "taplo"
+args = [
+	"fmt",
+]
+
+[tasks.fmt-toml-check]
+extend = "fmt-toml"
+args = [
+	"fmt",
+	"--check",
+]
+
+
 # Lint
 # | task                    | type      | cwd |
 # | ----------------------- | --------- | --- |
@@ -179,6 +246,20 @@ args = [
 ]
 
 
+# Meta
+# | task   | type      | cwd |
+# | ------ | --------- | --- |
+# | checks | composite |     |
+
+[tasks.checks]
+workspace = false
+dependencies = [
+	"fmt-check",
+	"lint",
+	"test",
+]
+
+
 # Test
 # | task                         | type      | cwd |
 # | ---------------------------- | --------- | --- |
@@ -276,85 +357,4 @@ dependencies = [
 	"test-host-ffi-header",
 	"test-macos-native-host",
 	"test-macos-native-host-stage",
-]
-
-
-# Format
-# | task           | type      | cwd |
-# | -------------- | --------- | --- |
-# | fmt            | composite |     |
-# | fmt-check      | composite |     |
-# | fmt-rust       | command   |     |
-# | fmt-rust-check | extend    |     |
-# | fmt-swift      | command   |     |
-# | fmt-swift-check| command   |     |
-# | fmt-toml       | command   |     |
-# | fmt-toml-check | extend    |     |
-
-[tasks.fmt]
-workspace = false
-dependencies = [
-	"fmt-rust",
-	"fmt-swift",
-	"fmt-toml",
-]
-
-[tasks.fmt-check]
-workspace = false
-dependencies = [
-	"fmt-rust-check",
-	"fmt-swift-check",
-	"fmt-toml-check",
-]
-
-[tasks.fmt-rust]
-workspace = false
-script = "cargo +nightly fmt --all"
-
-[tasks.fmt-rust-check]
-extend = "fmt-rust"
-script = "cargo +nightly fmt --all -- --check"
-
-[tasks.fmt-swift]
-workspace = false
-command = "swift"
-args = [
-	"format",
-	"format",
-	"--in-place",
-	"--recursive",
-	"--parallel",
-	"native/macos-host/Sources",
-]
-
-[tasks.fmt-swift-check]
-workspace = false
-extend = "lint-swift-format"
-
-[tasks.fmt-toml]
-workspace = false
-command = "taplo"
-args = [
-	"fmt",
-]
-
-[tasks.fmt-toml-check]
-extend = "fmt-toml"
-args = [
-	"fmt",
-	"--check",
-]
-
-
-# Meta
-# | task   | type      | cwd |
-# | ------ | --------- | --- |
-# | checks | composite |     |
-
-[tasks.checks]
-workspace = false
-dependencies = [
-	"fmt-check",
-	"lint",
-	"test",
 ]
