@@ -1,24 +1,18 @@
 //! Realtime transcription session helpers for Pass1 streaming.
 
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))] use std::time::Duration;
 use std::{
 	fmt::{Display, Formatter},
-	sync::{
-		mpsc,
-		mpsc::{Receiver, Sender},
-	},
-	thread::{self, JoinHandle},
+	sync::mpsc::{Receiver, Sender},
+	thread::JoinHandle,
 };
+#[cfg(feature = "voxit-realtime")] use std::{sync::mpsc, thread, time::Duration};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
-use futures_util::{SinkExt as _, StreamExt as _};
-use http::Request;
+#[cfg(feature = "voxit-realtime")] use futures_util::{SinkExt as _, StreamExt as _};
+#[cfg(feature = "voxit-realtime")] use http::Request;
 use serde_json::Value;
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))] use tokio::runtime::Runtime;
-use tokio::time;
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
-use tokio_tungstenite::tungstenite::protocol::Message;
+#[cfg(feature = "voxit-realtime")] use tokio::{runtime::Runtime, time};
+#[cfg(feature = "voxit-realtime")] use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::transcript::TranscriptEvent;
 use voxit_audio::AudioChunk;
@@ -82,7 +76,7 @@ pub enum RealtimeEvent {
 #[derive(Clone, Debug)]
 pub enum RealtimeError {
 	/// Required websocket client feature is not enabled for this build.
-	#[cfg(not(all(target_os = "macos", feature = "voxit-realtime")))]
+	#[cfg(not(feature = "voxit-realtime"))]
 	DependencyUnavailable {
 		/// Human-readable reason.
 		reason: String,
@@ -97,7 +91,7 @@ impl Display for RealtimeError {
 	/// Format error to string.
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 		match self {
-			#[cfg(not(all(target_os = "macos", feature = "voxit-realtime")))]
+			#[cfg(not(feature = "voxit-realtime"))]
 			Self::DependencyUnavailable { reason } => write!(f, "{reason}"),
 			Self::RuntimeError { reason } => write!(f, "{reason}"),
 		}
@@ -105,7 +99,7 @@ impl Display for RealtimeError {
 }
 
 /// Start a Pass1 websocket session and stream chunks to OpenAI Realtime.
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
+#[cfg(feature = "voxit-realtime")]
 pub fn start_realtime_session(
 	api_key: String,
 	account_id: Option<String>,
@@ -117,7 +111,7 @@ pub fn start_realtime_session(
 }
 
 /// Start a Pass1 websocket session and stream chunks to OpenAI Realtime.
-#[cfg(not(all(target_os = "macos", feature = "voxit-realtime")))]
+#[cfg(not(feature = "voxit-realtime"))]
 pub fn start_realtime_session(
 	api_key: String,
 	account_id: Option<String>,
@@ -136,7 +130,7 @@ pub fn start_realtime_session(
 	})
 }
 
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
+#[cfg(feature = "voxit-realtime")]
 fn start_realtime_session_impl(
 	api_key: String,
 	account_id: Option<String>,
@@ -152,7 +146,7 @@ fn start_realtime_session_impl(
 	Ok(RealtimeSession { stop_tx: Some(stop_tx), worker: Some(worker) })
 }
 
-#[cfg(all(target_os = "macos", feature = "voxit-realtime"))]
+#[cfg(feature = "voxit-realtime")]
 fn run_realtime_worker(
 	api_key: String,
 	account_id: Option<String>,

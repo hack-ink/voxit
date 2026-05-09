@@ -17,7 +17,6 @@ voxit-realtime = ["dep:futures-util", "dep:http", "dep:tokio", "dep:tokio-tungst
 base64            = { workspace = true }
 directories       = { workspace = true }
 futures-util      = { workspace = true, optional = true }
-hound             = { workspace = true }
 http              = { workspace = true, optional = true }
 keyring           = { workspace = true }
 reqwest           = { workspace = true }
@@ -34,6 +33,7 @@ webbrowser        = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation            = { workspace = true }
 core-foundation-sys        = { workspace = true }
+hound                      = { workspace = true }
 objc2-foundation           = { workspace = true }
 objc2-local-authentication = { workspace = true }
 security-framework-sys     = { workspace = true }

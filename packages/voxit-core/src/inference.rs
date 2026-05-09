@@ -4,10 +4,14 @@ use std::sync::mpsc::{Receiver, Sender};
 #[cfg(target_os = "macos")] use std::{collections::BTreeMap, time::Instant};
 
 #[cfg(target_os = "macos")]
-use crate::providers::{self, InferenceProvider, RewriteRequest, TranscriptionRequest};
 use crate::{
-	ContextualVoiceRouter, FocusedAppContext, VoiceSessionPlan,
-	providers::chatgpt::ChatGptProvider,
+	ContextualVoiceRouter, FocusedAppContext,
+	providers::{
+		self, InferenceProvider, RewriteRequest, TranscriptionRequest, chatgpt::ChatGptProvider,
+	},
+};
+use crate::{
+	VoiceSessionPlan,
 	realtime::{RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig},
 };
 use voxit_audio::AudioChunk;
@@ -103,7 +107,7 @@ pub fn start_realtime_session(
 	let _ = chunk_rx;
 	let _ = event_tx;
 
-	Err(RealtimeError::DependencyUnavailable {
+	Err(RealtimeError::RuntimeError {
 		reason: "inference pipeline is only enabled on macOS builds".to_string(),
 	})
 }
