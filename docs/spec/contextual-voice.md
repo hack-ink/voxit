@@ -112,12 +112,18 @@ Profile contracts include:
 
 - stable profile id
 - display title
+- prompt directive used for model-specific prompt construction
 - interaction tier
 - default reasoning effort
 - default output policy
 
-Custom profiles may be user-defined later, but built-in profile routing remains
-deterministic and testable.
+The native host may set a manual built-in profile override for the current session.
+When no override is active, built-in profile routing remains deterministic and
+testable from focused app context.
+
+User glossary terms are not routing rules. They are rewrite prompt inputs that help
+preserve preferred spellings, names, and domain terms after a session plan has already
+selected the profile.
 
 ## 5) Reasoning Effort
 
@@ -154,6 +160,8 @@ Rust Core owns:
 - voice session planning
 - reasoning effort and output policy selection
 - provider orchestration and model-specific prompt construction
+- applying manual built-in profile overrides exposed by host UI
+- applying glossary terms to rewrite prompt construction
 
 Swift hosts own:
 
