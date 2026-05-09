@@ -288,7 +288,7 @@ use std::{
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use base64::Engine;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use directories::ProjectDirs;
 use keyring::Entry;
 use reqwest::blocking::{Client, Response};
@@ -1316,8 +1316,7 @@ fn decode_jwt_payload(jwt: &str) -> Option<Value> {
 	let mut parts = jwt.split('.');
 	let _header = parts.next()?;
 	let payload = parts.next()?;
-	let payload =
-		base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
+	let payload = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
 
 	serde_json::from_slice(&payload).ok()
 }

@@ -26,15 +26,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  rust:
-    name: Rust checks
+  rust-check:
+    name: Rust check
     runs-on: macos-latest
     steps:
       - name: Fetch latest code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
           cache: true
           rustflags: ''
@@ -44,71 +44,95 @@ jobs:
         run: rustup toolchain install nightly --component rustfmt
 
       - name: Install cargo-make
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: cargo-make
 
-      - name: Install vibe-style (latest release)
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          VERSION="$(
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              https://api.github.com/repos/hack-ink/vibe-style/releases/latest \
-              | grep -oE '"tag_name": "v[^"]+"' \
-              | cut -d'"' -f4
-          )"
-          TARGET="$(rustc -vV | awk -F': ' '/^host:/ {print $2}')"
-          ASSET="vibe-style-${TARGET}-${VERSION}.tgz"
-
-          curl -fsSLO "https://github.com/hack-ink/vibe-style/releases/download/${VERSION}/${ASSET}"
-          tar -xzf "${ASSET}"
-
-          mkdir -p "$HOME/.cargo/bin"
-          install -m 0755 "vibe-style-${TARGET}-${VERSION}/vstyle" "$HOME/.cargo/bin/vstyle"
-          install -m 0755 "vibe-style-${TARGET}-${VERSION}/cargo-vstyle" "$HOME/.cargo/bin/cargo-vstyle"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: nextest
-
-      - name: Run lint
-        run: cargo make lint
 
       - name: Run Rust format checks
         run: cargo make fmt-rust-check
 
-      - name: Run tests
-        env:
-          VOXIT_NATIVE_HOST_SIGN_IDENTITY: '-'
-        run: cargo make test
+      - name: Run Rust style check
+        uses: hack-ink/vibe-style@bfb4d2d2f5e4b5e5ce8de4ed1d708b3a2f0e61fe # v0.2.1
+        with:
+          language: rust
+          workspace: true
+          args: --all-features
+          version: v0.2.1
 
-  toml:
-    name: TOML checks
+      - name: Run Rust clippy
+        run: cargo make lint-rust
+
+      - name: Run Rust tests
+        run: cargo make test-rust
+
+  swift-check:
+    name: Swift check
     runs-on: macos-latest
     steps:
       - name: Fetch latest code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Print Apple toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
           cache: true
           rustflags: ''
 
       - name: Install cargo-make
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
+        with:
+          tool: cargo-make
+
+      - name: Run Swift format checks
+        run: cargo make fmt-swift-check
+
+      - name: Run Swift style check
+        uses: hack-ink/vibe-style@bfb4d2d2f5e4b5e5ce8de4ed1d708b3a2f0e61fe # v0.2.1
+        with:
+          language: swift
+          workspace: true
+          args: --all-features
+          version: v0.2.1
+
+      - name: Run Swift lint and strict build
+        run: cargo make lint-swift
+
+      - name: Run native host tests
+        env:
+          VOXIT_NATIVE_HOST_SIGN_IDENTITY: '-'
+        run: cargo make test-swift
+
+  toml-check:
+    name: TOML check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch latest code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          cache: true
+          rustflags: ''
+
+      - name: Install cargo-make
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: cargo-make
 
       - name: Install taplo
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: taplo
 

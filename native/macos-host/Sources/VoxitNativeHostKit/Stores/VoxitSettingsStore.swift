@@ -119,7 +119,7 @@ struct VoxitSettings: Equatable {
 
   private static func parseHotkeyPresentation(_ raw: String) -> VoxitHotkeyPresentation? {
     let tokens = hotkeyTokens(from: raw)
-    guard !tokens.isEmpty else {
+    guard tokens.isEmpty == false else {
       return nil
     }
 
@@ -190,7 +190,7 @@ struct VoxitSettings: Equatable {
         character == "+" || character == "-"
       }
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
+      .filter { $0.isEmpty == false }
   }
 }
 

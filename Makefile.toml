@@ -1,16 +1,20 @@
 # Rust workspace tasks.
 
 # Lint
-# | task            | type      | cwd |
-# | --------------- | --------- | --- |
-# | lint            | composite |     |
-# | lint-fix        | composite |     |
-# | lint-rust       | command   |     |
-# | lint-fix-rust   | extend    |     |
-# | lint-swift      | composite |     |
-# | lint-fix-swift  | composite |     |
-# | lint-vstyle     | command   |     |
-# | lint-fix-vstyle | command   |     |
+# | task                    | type      | cwd |
+# | ----------------------- | --------- | --- |
+# | lint                    | composite |     |
+# | lint-fix                | composite |     |
+# | lint-rust               | command   |     |
+# | lint-fix-rust           | extend    |     |
+# | lint-swift              | composite |     |
+# | lint-fix-swift          | composite |     |
+# | lint-vstyle             | composite |     |
+# | lint-vstyle-rust        | command   |     |
+# | lint-vstyle-swift       | command   |     |
+# | lint-fix-vstyle         | composite |     |
+# | lint-fix-vstyle-rust    | command   |     |
+# | lint-fix-vstyle-swift   | command   |     |
 
 [tasks.lint]
 workspace = false
@@ -111,20 +115,63 @@ args = [
 
 [tasks.lint-vstyle]
 workspace = false
+dependencies = [
+	"lint-vstyle-rust",
+	"lint-vstyle-swift",
+]
+
+[tasks.lint-vstyle-rust]
+workspace = false
 command = "cargo"
 args = [
 	"vstyle",
 	"curate",
+	"--language",
+	"rust",
 	"--workspace",
-	"--all-features"
+	"--all-features",
+]
+
+[tasks.lint-vstyle-swift]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"curate",
+	"--language",
+	"swift",
+	"--workspace",
+	"--all-features",
 ]
 
 [tasks.lint-fix-vstyle]
+workspace = false
+dependencies = [
+	"lint-fix-vstyle-rust",
+	"lint-fix-vstyle-swift",
+]
+
+[tasks.lint-fix-vstyle-rust]
 workspace = false
 command = "cargo"
 args = [
 	"vstyle",
 	"tune",
+	"--language",
+	"rust",
+	"--workspace",
+	"--all-features",
+	"--strict",
+]
+
+[tasks.lint-fix-vstyle-swift]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"tune",
+	"--language",
+	"swift",
 	"--workspace",
 	"--all-features",
 	"--strict",
@@ -132,10 +179,11 @@ args = [
 
 
 # Test
-# | task      | type      | cwd |
-# | --------- | --------- | --- |
+# | task                         | type      | cwd |
+# | ---------------------------- | --------- | --- |
 # | test                         | composite | |
 # | test-rust                    | command   | |
+# | test-swift                   | composite | |
 # | test-host-ffi-header         | command   | |
 # | test-macos-native-host       | command   | |
 # | test-macos-native-host-stage | command   | |
@@ -144,6 +192,12 @@ args = [
 workspace = false
 dependencies = [
 	"test-rust",
+	"test-swift",
+]
+
+[tasks.test-swift]
+workspace = false
+dependencies = [
 	"test-host-ffi-header",
 	"test-macos-native-host",
 	"test-macos-native-host-stage",

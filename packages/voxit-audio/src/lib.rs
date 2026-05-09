@@ -19,7 +19,7 @@ use coreaudio::audio_unit::{
 	render_callback::{Args, data::Interleaved},
 };
 use coreaudio::error::Error;
-use hound::WavWriter;
+use hound::{WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc2_audio_toolbox::{
 	kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
@@ -499,7 +499,7 @@ fn encode_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Vec<u8
 		return Err("invalid sample rate".to_string());
 	}
 
-	let spec = hound::WavSpec {
+	let spec = WavSpec {
 		channels,
 		sample_rate,
 		bits_per_sample: 16,
