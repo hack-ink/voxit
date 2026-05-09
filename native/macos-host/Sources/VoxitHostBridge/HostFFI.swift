@@ -254,6 +254,29 @@ public final class VoxitHostSession {
     return try currentSnapshot()
   }
 
+  public func savePreferences(
+    hotkeyChord: String,
+    hotkeyMode: HotkeyMode,
+    startHidden: Bool,
+    pasteAfterTranscription: Bool,
+    rewriteAfterTranscription: Bool
+  ) throws -> HostSnapshot {
+    let preferences = VoxitHostPreferences(
+      start_hidden: startHidden ? 1 : 0,
+      hotkey_mode: encode(hotkeyMode: hotkeyMode),
+      paste_after_transcription: pasteAfterTranscription ? 1 : 0,
+      rewrite_after_transcription: rewriteAfterTranscription ? 1 : 0
+    )
+    try hotkeyChord.withCString { chord in
+      try requireOk(
+        voxit_host_session_save_preferences(handle, preferences, chord),
+        context: "saving host preferences"
+      )
+    }
+
+    return try currentSnapshot()
+  }
+
   private func requireOk(_ status: VoxitStatus, context: String) throws {
     let code = voxit_status_code(status)
     if code != 0 {
@@ -369,6 +392,15 @@ public final class VoxitHostSession {
       return .hold
     default:
       throw HostBridgeError.invalidHotkeyMode(hotkeyMode.rawValue)
+    }
+  }
+
+  private func encode(hotkeyMode: HotkeyMode) -> VoxitHotkeyMode {
+    switch hotkeyMode {
+    case .toggle:
+      return VOXIT_HOTKEY_MODE_TOGGLE
+    case .hold:
+      return VOXIT_HOTKEY_MODE_HOLD
     }
   }
 

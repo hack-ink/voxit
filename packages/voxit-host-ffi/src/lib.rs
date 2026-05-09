@@ -4,7 +4,10 @@
 //! This gives the Swift host a stable Rust-owned model without moving audio, auth, or
 //! inference orchestration across FFI before those boundaries are ready.
 
-use std::{ffi::c_char, ptr::NonNull};
+use std::{
+	ffi::{CStr, c_char},
+	ptr::NonNull,
+};
 
 use voxit_core::{
 	Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
@@ -195,6 +198,20 @@ pub enum VoxitHostStringField {
 pub struct VoxitHostConfig {
 	/// Platform family that owns the host.
 	pub platform: VoxitPlatformTag,
+}
+
+/// FFI-safe user preference payload written through Rust config.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VoxitHostPreferences {
+	/// Non-zero when the app should start hidden/menu-bar first.
+	pub start_hidden: u8,
+	/// Hotkey mode.
+	pub hotkey_mode: VoxitHotkeyMode,
+	/// Non-zero when final output should paste automatically when policy allows it.
+	pub paste_after_transcription: u8,
+	/// Non-zero when pass-3 rewrite is enabled.
+	pub rewrite_after_transcription: u8,
 }
 
 /// FFI-safe native-host snapshot.
@@ -417,6 +434,35 @@ pub unsafe extern "C" fn voxit_host_session_paste_final_output(
 	paste_final_output(handle)
 }
 
+/// Saves host preferences through the Rust-owned config file.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+/// `hotkey_chord` must point to a null-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_save_preferences(
+	handle: *mut VoxitHostSessionHandle,
+	preferences: VoxitHostPreferences,
+	hotkey_chord: *const c_char,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let Some(hotkey_chord) = NonNull::new(hotkey_chord.cast_mut()) else {
+		return VoxitStatus::InvalidInput;
+	};
+	let handle = unsafe { handle.as_mut() };
+	let hotkey_chord = unsafe { CStr::from_ptr(hotkey_chord.as_ptr()) };
+	let Ok(hotkey_chord) = hotkey_chord.to_str() else {
+		set_error(handle, "hotkey chord is not valid UTF-8");
+
+		return VoxitStatus::Ok;
+	};
+
+	save_preferences(handle, preferences, hotkey_chord)
+}
+
 /// Copies a Rust-owned string field into caller-owned memory.
 ///
 /// # Safety
@@ -592,6 +638,39 @@ fn paste_final_output(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 
 		VoxitStatus::Ok
 	}
+}
+
+fn save_preferences(
+	handle: &mut VoxitHostSessionHandle,
+	preferences: VoxitHostPreferences,
+	hotkey_chord: &str,
+) -> VoxitStatus {
+	handle.config.ui.start_hidden = preferences.start_hidden != 0;
+	handle.config.hotkey.chord = hotkey_chord.to_ascii_lowercase().replace('-', "+");
+	handle.config.hotkey.mode = match preferences.hotkey_mode {
+		VoxitHotkeyMode::Hold => "hold".to_string(),
+		VoxitHotkeyMode::Toggle => "toggle".to_string(),
+	};
+	handle.config.rewrite.enabled = preferences.rewrite_after_transcription != 0;
+	handle.config.rewrite.auto = preferences.rewrite_after_transcription != 0;
+	handle.config.paste.method = if preferences.paste_after_transcription != 0 {
+		"clipboard_cmd_v".to_string()
+	} else {
+		"manual".to_string()
+	};
+	handle.snapshot.hotkey_mode = match preferences.hotkey_mode {
+		VoxitHotkeyMode::Hold => HotkeySurfaceMode::Hold,
+		VoxitHotkeyMode::Toggle => HotkeySurfaceMode::Toggle,
+	};
+	handle.snapshot.rewrite_enabled = handle.config.rewrite.enabled;
+
+	if let Err(err) = handle.config.save() {
+		set_error(handle, format!("failed to save config: {err}"));
+	} else {
+		handle.last_error.clear();
+	}
+
+	VoxitStatus::Ok
 }
 
 fn clear_run_output(handle: &mut VoxitHostSessionHandle) {

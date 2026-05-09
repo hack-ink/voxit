@@ -92,6 +92,13 @@ typedef struct VoxitHostConfig {
 	enum VoxitPlatformTag platform;
 } VoxitHostConfig;
 
+typedef struct VoxitHostPreferences {
+	uint8_t start_hidden;
+	enum VoxitHotkeyMode hotkey_mode;
+	uint8_t paste_after_transcription;
+	uint8_t rewrite_after_transcription;
+} VoxitHostPreferences;
+
 typedef struct VoxitHostSnapshot {
 	enum VoxitPlatformTag platform;
 	enum VoxitAuthMethod auth_method;
@@ -120,6 +127,11 @@ enum VoxitStatus voxit_host_session_refresh_focused_context(VoxitHostSessionHand
 enum VoxitStatus voxit_host_session_start_dictation(VoxitHostSessionHandle *handle);
 enum VoxitStatus voxit_host_session_stop_dictation(VoxitHostSessionHandle *handle);
 enum VoxitStatus voxit_host_session_paste_final_output(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_save_preferences(
+	VoxitHostSessionHandle *handle,
+	struct VoxitHostPreferences preferences,
+	const char *hotkey_chord
+);
 enum VoxitStatus voxit_host_session_copy_snapshot(
 	VoxitHostSessionHandle *handle,
 	struct VoxitHostSnapshot *out

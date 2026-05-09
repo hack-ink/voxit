@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import VoxitHostBridge
 
 @MainActor
 final class VoxitSettingsStore: ObservableObject {
@@ -18,6 +19,7 @@ final class VoxitSettingsStore: ObservableObject {
   }
 
   private let defaults: UserDefaults
+  private var syncHandler: ((VoxitSettings) -> Void)?
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
@@ -53,7 +55,12 @@ final class VoxitSettingsStore: ObservableObject {
     let sanitized = next.sanitized()
     settings = sanitized
     Self.persist(sanitized, into: defaults)
+    syncHandler?(sanitized)
     NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+  }
+
+  func setSyncHandler(_ syncHandler: @escaping (VoxitSettings) -> Void) {
+    self.syncHandler = syncHandler
   }
 
   private static func persist(_ settings: VoxitSettings, into defaults: UserDefaults) {
@@ -205,6 +212,15 @@ enum VoxitHotkeyModePreference: String, CaseIterable, Identifiable {
       return "Toggle"
     case .hold:
       return "Hold"
+    }
+  }
+
+  var hostBridgeValue: HotkeyMode {
+    switch self {
+    case .toggle:
+      return .toggle
+    case .hold:
+      return .hold
     }
   }
 }

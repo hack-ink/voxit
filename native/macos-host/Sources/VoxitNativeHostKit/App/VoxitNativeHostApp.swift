@@ -15,7 +15,9 @@ public struct VoxitNativeHostApp: App {
         .frame(minWidth: 720, minHeight: 460)
         .task {
           VoxitArtwork.applyApplicationIcon()
+          configureSettingsSync()
           await store.reload()
+          await store.savePreferences(settingsStore.settings)
         }
     }
     .commands {
@@ -109,6 +111,15 @@ public struct VoxitNativeHostApp: App {
       Image(nsImage: VoxitArtwork.statusBarImage())
         .renderingMode(.template)
         .foregroundStyle(.primary)
+    }
+  }
+
+  @MainActor
+  private func configureSettingsSync() {
+    settingsStore.setSyncHandler { settings in
+      Task {
+        await store.savePreferences(settings)
+      }
     }
   }
 

@@ -60,6 +60,22 @@ public final class HostStore: ObservableObject {
     }
   }
 
+  func savePreferences(_ settings: VoxitSettings) async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.savePreferences(
+        hotkeyChord: settings.dictationHotkey,
+        hotkeyMode: settings.hotkeyMode.hostBridgeValue,
+        startHidden: settings.startHidden,
+        pasteAfterTranscription: settings.pasteAfterTranscription,
+        rewriteAfterTranscription: settings.rewriteAfterTranscription
+      )
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
   private func currentSession() throws -> VoxitHostSession {
     if let session {
       return session
