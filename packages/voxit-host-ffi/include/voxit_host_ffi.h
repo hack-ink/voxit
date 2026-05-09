@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define VOXIT_HOST_FFI_ABI_VERSION 1u
+#define VOXIT_HOST_FFI_ABI_VERSION 2u
 
 typedef struct VoxitHostSessionHandle VoxitHostSessionHandle;
 
@@ -47,6 +47,34 @@ typedef enum VoxitHotkeyMode {
 	VOXIT_HOTKEY_MODE_HOLD = 1,
 } VoxitHotkeyMode;
 
+typedef enum VoxitPromptProfileKind {
+	VOXIT_PROMPT_PROFILE_FAST_DICTATION = 0,
+	VOXIT_PROMPT_PROFILE_MESSAGING = 1,
+	VOXIT_PROMPT_PROFILE_MAIL = 2,
+	VOXIT_PROMPT_PROFILE_CODE_EDITOR = 3,
+	VOXIT_PROMPT_PROFILE_TERMINAL = 4,
+	VOXIT_PROMPT_PROFILE_WORK_TRACKER = 5,
+} VoxitPromptProfileKind;
+
+typedef enum VoxitVoiceInteractionTier {
+	VOXIT_VOICE_TIER_FAST_DICTATION = 0,
+	VOXIT_VOICE_TIER_CONTEXT_REWRITE = 1,
+	VOXIT_VOICE_TIER_VOICE_INTENT = 2,
+} VoxitVoiceInteractionTier;
+
+typedef enum VoxitVoiceReasoningEffort {
+	VOXIT_REASONING_EFFORT_MINIMAL = 0,
+	VOXIT_REASONING_EFFORT_LOW = 1,
+	VOXIT_REASONING_EFFORT_MEDIUM = 2,
+	VOXIT_REASONING_EFFORT_HIGH = 3,
+} VoxitVoiceReasoningEffort;
+
+typedef enum VoxitVoiceOutputPolicy {
+	VOXIT_OUTPUT_POLICY_INSERT_TEXT = 0,
+	VOXIT_OUTPUT_POLICY_PREVIEW_BEFORE_INSERT = 1,
+	VOXIT_OUTPUT_POLICY_CONFIRM_BEFORE_ACTION = 2,
+} VoxitVoiceOutputPolicy;
+
 typedef struct VoxitHostConfig {
 	enum VoxitPlatformTag platform;
 } VoxitHostConfig;
@@ -60,6 +88,10 @@ typedef struct VoxitHostSnapshot {
 	uint32_t panel_width_px;
 	uint32_t panel_height_px;
 	uint8_t rewrite_enabled;
+	enum VoxitPromptProfileKind prompt_profile_kind;
+	enum VoxitVoiceInteractionTier voice_tier;
+	enum VoxitVoiceReasoningEffort reasoning_effort;
+	enum VoxitVoiceOutputPolicy output_policy;
 } VoxitHostSnapshot;
 
 uint32_t voxit_host_ffi_abi_version(void);

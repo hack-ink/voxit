@@ -30,6 +30,34 @@ public enum HotkeyMode: Equatable, Sendable {
   case hold
 }
 
+public enum PromptProfileKind: Equatable, Sendable {
+  case fastDictation
+  case messaging
+  case mail
+  case codeEditor
+  case terminal
+  case workTracker
+}
+
+public enum VoiceInteractionTier: Equatable, Sendable {
+  case fastDictation
+  case contextRewrite
+  case voiceIntent
+}
+
+public enum VoiceReasoningEffort: Equatable, Sendable {
+  case minimal
+  case low
+  case medium
+  case high
+}
+
+public enum VoiceOutputPolicy: Equatable, Sendable {
+  case insertText
+  case previewBeforeInsert
+  case confirmBeforeAction
+}
+
 public struct HostSnapshot: Equatable, Sendable {
   public var platform: HostPlatform
   public var authMethod: AuthMethod
@@ -39,6 +67,10 @@ public struct HostSnapshot: Equatable, Sendable {
   public var panelWidth: Int
   public var panelHeight: Int
   public var rewriteEnabled: Bool
+  public var promptProfileKind: PromptProfileKind
+  public var voiceTier: VoiceInteractionTier
+  public var reasoningEffort: VoiceReasoningEffort
+  public var outputPolicy: VoiceOutputPolicy
 
   public init(
     platform: HostPlatform,
@@ -48,7 +80,11 @@ public struct HostSnapshot: Equatable, Sendable {
     hotkeyMode: HotkeyMode,
     panelWidth: Int,
     panelHeight: Int,
-    rewriteEnabled: Bool
+    rewriteEnabled: Bool,
+    promptProfileKind: PromptProfileKind,
+    voiceTier: VoiceInteractionTier,
+    reasoningEffort: VoiceReasoningEffort,
+    outputPolicy: VoiceOutputPolicy
   ) {
     self.platform = platform
     self.authMethod = authMethod
@@ -58,6 +94,10 @@ public struct HostSnapshot: Equatable, Sendable {
     self.panelWidth = panelWidth
     self.panelHeight = panelHeight
     self.rewriteEnabled = rewriteEnabled
+    self.promptProfileKind = promptProfileKind
+    self.voiceTier = voiceTier
+    self.reasoningEffort = reasoningEffort
+    self.outputPolicy = outputPolicy
   }
 }
 
@@ -70,6 +110,10 @@ public enum HostBridgeError: Error, Equatable, CustomStringConvertible {
   case invalidAuthState(UInt32)
   case invalidDictationState(UInt32)
   case invalidHotkeyMode(UInt32)
+  case invalidPromptProfileKind(UInt32)
+  case invalidVoiceInteractionTier(UInt32)
+  case invalidVoiceReasoningEffort(UInt32)
+  case invalidVoiceOutputPolicy(UInt32)
 
   public var description: String {
     switch self {
@@ -89,6 +133,14 @@ public enum HostBridgeError: Error, Equatable, CustomStringConvertible {
       return "Unknown dictation state \(rawValue)"
     case .invalidHotkeyMode(let rawValue):
       return "Unknown hotkey mode \(rawValue)"
+    case .invalidPromptProfileKind(let rawValue):
+      return "Unknown prompt profile kind \(rawValue)"
+    case .invalidVoiceInteractionTier(let rawValue):
+      return "Unknown voice interaction tier \(rawValue)"
+    case .invalidVoiceReasoningEffort(let rawValue):
+      return "Unknown voice reasoning effort \(rawValue)"
+    case .invalidVoiceOutputPolicy(let rawValue):
+      return "Unknown voice output policy \(rawValue)"
     }
   }
 }
@@ -143,7 +195,11 @@ public final class VoxitHostSession {
       hotkeyMode: try decode(hotkeyMode: snapshot.hotkey_mode),
       panelWidth: Int(snapshot.panel_width_px),
       panelHeight: Int(snapshot.panel_height_px),
-      rewriteEnabled: snapshot.rewrite_enabled != 0
+      rewriteEnabled: snapshot.rewrite_enabled != 0,
+      promptProfileKind: try decode(promptProfileKind: snapshot.prompt_profile_kind),
+      voiceTier: try decode(voiceTier: snapshot.voice_tier),
+      reasoningEffort: try decode(reasoningEffort: snapshot.reasoning_effort),
+      outputPolicy: try decode(outputPolicy: snapshot.output_policy)
     )
   }
 
@@ -207,6 +263,66 @@ public final class VoxitHostSession {
       return .hold
     default:
       throw HostBridgeError.invalidHotkeyMode(hotkeyMode.rawValue)
+    }
+  }
+
+  private func decode(promptProfileKind: VoxitPromptProfileKind) throws -> PromptProfileKind {
+    switch promptProfileKind.rawValue {
+    case VOXIT_PROMPT_PROFILE_FAST_DICTATION.rawValue:
+      return .fastDictation
+    case VOXIT_PROMPT_PROFILE_MESSAGING.rawValue:
+      return .messaging
+    case VOXIT_PROMPT_PROFILE_MAIL.rawValue:
+      return .mail
+    case VOXIT_PROMPT_PROFILE_CODE_EDITOR.rawValue:
+      return .codeEditor
+    case VOXIT_PROMPT_PROFILE_TERMINAL.rawValue:
+      return .terminal
+    case VOXIT_PROMPT_PROFILE_WORK_TRACKER.rawValue:
+      return .workTracker
+    default:
+      throw HostBridgeError.invalidPromptProfileKind(promptProfileKind.rawValue)
+    }
+  }
+
+  private func decode(voiceTier: VoxitVoiceInteractionTier) throws -> VoiceInteractionTier {
+    switch voiceTier.rawValue {
+    case VOXIT_VOICE_TIER_FAST_DICTATION.rawValue:
+      return .fastDictation
+    case VOXIT_VOICE_TIER_CONTEXT_REWRITE.rawValue:
+      return .contextRewrite
+    case VOXIT_VOICE_TIER_VOICE_INTENT.rawValue:
+      return .voiceIntent
+    default:
+      throw HostBridgeError.invalidVoiceInteractionTier(voiceTier.rawValue)
+    }
+  }
+
+  private func decode(reasoningEffort: VoxitVoiceReasoningEffort) throws -> VoiceReasoningEffort {
+    switch reasoningEffort.rawValue {
+    case VOXIT_REASONING_EFFORT_MINIMAL.rawValue:
+      return .minimal
+    case VOXIT_REASONING_EFFORT_LOW.rawValue:
+      return .low
+    case VOXIT_REASONING_EFFORT_MEDIUM.rawValue:
+      return .medium
+    case VOXIT_REASONING_EFFORT_HIGH.rawValue:
+      return .high
+    default:
+      throw HostBridgeError.invalidVoiceReasoningEffort(reasoningEffort.rawValue)
+    }
+  }
+
+  private func decode(outputPolicy: VoxitVoiceOutputPolicy) throws -> VoiceOutputPolicy {
+    switch outputPolicy.rawValue {
+    case VOXIT_OUTPUT_POLICY_INSERT_TEXT.rawValue:
+      return .insertText
+    case VOXIT_OUTPUT_POLICY_PREVIEW_BEFORE_INSERT.rawValue:
+      return .previewBeforeInsert
+    case VOXIT_OUTPUT_POLICY_CONFIRM_BEFORE_ACTION.rawValue:
+      return .confirmBeforeAction
+    default:
+      throw HostBridgeError.invalidVoiceOutputPolicy(outputPolicy.rawValue)
     }
   }
 }

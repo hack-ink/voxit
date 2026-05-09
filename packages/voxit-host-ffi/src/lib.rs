@@ -7,16 +7,21 @@
 use std::ptr::NonNull;
 
 use voxit_core::{
-	Config, NativeHostSnapshot, PlatformHost,
+	Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
+	VoiceSessionPlan,
+	contextual::{
+		PromptProfileKind, VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort,
+	},
 	ui_model::{AuthMethod, AuthSurfaceState, DictationSurfaceState, HotkeySurfaceMode},
 };
 
 /// ABI version exported by the thin C host bridge.
-pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 1;
+pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 2;
 
 /// Opaque session handle owned by the native host through the C ABI.
 pub struct VoxitHostSessionHandle {
 	snapshot: NativeHostSnapshot,
+	voice_plan: VoiceSessionPlan,
 }
 
 /// Result code returned by FFI entry points.
@@ -91,6 +96,62 @@ pub enum VoxitHotkeyMode {
 	Hold = 1,
 }
 
+/// FFI-safe built-in prompt profile kind.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxitPromptProfileKind {
+	/// Default low-latency dictation profile.
+	FastDictation = 0,
+	/// Messaging profile for conversational destinations.
+	Messaging = 1,
+	/// Mail profile for complete email prose.
+	Mail = 2,
+	/// Code editor profile for programming-related dictation.
+	CodeEditor = 3,
+	/// Terminal profile for command-like proposals.
+	Terminal = 4,
+	/// Work tracker profile for issue, review, and planning destinations.
+	WorkTracker = 5,
+}
+
+/// FFI-safe interaction tier.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxitVoiceInteractionTier {
+	/// Lowest-latency speech-to-clean-text path.
+	FastDictation = 0,
+	/// App-aware rewrite path.
+	ContextRewrite = 1,
+	/// Intent-oriented path.
+	VoiceIntent = 2,
+}
+
+/// FFI-safe reasoning effort.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxitVoiceReasoningEffort {
+	/// Fastest viable reasoning path.
+	Minimal = 0,
+	/// Light reasoning for common contextual rewrites.
+	Low = 1,
+	/// Deeper reasoning for multi-step output.
+	Medium = 2,
+	/// Strongest reasoning for constrained output.
+	High = 3,
+}
+
+/// FFI-safe output policy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxitVoiceOutputPolicy {
+	/// Insert or paste final text directly.
+	InsertText = 0,
+	/// Show the output before insertion.
+	PreviewBeforeInsert = 1,
+	/// Require confirmation before action-like output.
+	ConfirmBeforeAction = 2,
+}
+
 /// FFI-safe session configuration.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +180,14 @@ pub struct VoxitHostSnapshot {
 	pub panel_height_px: u32,
 	/// Non-zero when pass-3 rewrite is enabled.
 	pub rewrite_enabled: u8,
+	/// Selected prompt profile kind.
+	pub prompt_profile_kind: VoxitPromptProfileKind,
+	/// Selected voice interaction tier.
+	pub voice_tier: VoxitVoiceInteractionTier,
+	/// Selected reasoning effort.
+	pub reasoning_effort: VoxitVoiceReasoningEffort,
+	/// Selected output policy.
+	pub output_policy: VoxitVoiceOutputPolicy,
 }
 impl Default for VoxitHostSnapshot {
 	fn default() -> Self {
@@ -131,6 +200,10 @@ impl Default for VoxitHostSnapshot {
 			panel_width_px: 0,
 			panel_height_px: 0,
 			rewrite_enabled: 0,
+			prompt_profile_kind: VoxitPromptProfileKind::FastDictation,
+			voice_tier: VoxitVoiceInteractionTier::FastDictation,
+			reasoning_effort: VoxitVoiceReasoningEffort::Minimal,
+			output_policy: VoxitVoiceOutputPolicy::InsertText,
 		}
 	}
 }
@@ -151,8 +224,9 @@ pub extern "C" fn voxit_host_session_create(
 		VoxitPlatformTag::Unsupported => PlatformHost::Unsupported,
 	};
 	let snapshot = NativeHostSnapshot::initial(platform, &Config::default());
+	let voice_plan = ContextualVoiceRouter.plan_for_context(&FocusedAppContext::new());
 
-	Box::into_raw(Box::new(VoxitHostSessionHandle { snapshot }))
+	Box::into_raw(Box::new(VoxitHostSessionHandle { snapshot, voice_plan }))
 }
 
 /// Destroys a Rust-owned native-host session.
@@ -186,13 +260,17 @@ pub unsafe extern "C" fn voxit_host_session_copy_snapshot(
 		return VoxitStatus::NullOutput;
 	};
 	let snapshot = unsafe { &handle.as_ref().snapshot };
+	let voice_plan = unsafe { &handle.as_ref().voice_plan };
 
-	unsafe { out.as_ptr().write(encode_snapshot(snapshot)) };
+	unsafe { out.as_ptr().write(encode_snapshot(snapshot, voice_plan)) };
 
 	VoxitStatus::Ok
 }
 
-fn encode_snapshot(snapshot: &NativeHostSnapshot) -> VoxitHostSnapshot {
+fn encode_snapshot(
+	snapshot: &NativeHostSnapshot,
+	voice_plan: &VoiceSessionPlan,
+) -> VoxitHostSnapshot {
 	VoxitHostSnapshot {
 		platform: encode_platform(snapshot.platform),
 		auth_method: encode_auth_method(snapshot.auth_method),
@@ -202,6 +280,10 @@ fn encode_snapshot(snapshot: &NativeHostSnapshot) -> VoxitHostSnapshot {
 		panel_width_px: snapshot.panel_width_px,
 		panel_height_px: snapshot.panel_height_px,
 		rewrite_enabled: u8::from(snapshot.rewrite_enabled),
+		prompt_profile_kind: encode_prompt_profile_kind(voice_plan.profile_kind),
+		voice_tier: encode_voice_tier(voice_plan.tier),
+		reasoning_effort: encode_reasoning_effort(voice_plan.reasoning_effort),
+		output_policy: encode_output_policy(voice_plan.output_policy),
 	}
 }
 
@@ -244,11 +326,48 @@ fn encode_hotkey_mode(mode: HotkeySurfaceMode) -> VoxitHotkeyMode {
 	}
 }
 
+fn encode_prompt_profile_kind(kind: PromptProfileKind) -> VoxitPromptProfileKind {
+	match kind {
+		PromptProfileKind::FastDictation => VoxitPromptProfileKind::FastDictation,
+		PromptProfileKind::Messaging => VoxitPromptProfileKind::Messaging,
+		PromptProfileKind::Mail => VoxitPromptProfileKind::Mail,
+		PromptProfileKind::CodeEditor => VoxitPromptProfileKind::CodeEditor,
+		PromptProfileKind::Terminal => VoxitPromptProfileKind::Terminal,
+		PromptProfileKind::WorkTracker => VoxitPromptProfileKind::WorkTracker,
+	}
+}
+
+fn encode_voice_tier(tier: VoiceInteractionTier) -> VoxitVoiceInteractionTier {
+	match tier {
+		VoiceInteractionTier::FastDictation => VoxitVoiceInteractionTier::FastDictation,
+		VoiceInteractionTier::ContextRewrite => VoxitVoiceInteractionTier::ContextRewrite,
+		VoiceInteractionTier::VoiceIntent => VoxitVoiceInteractionTier::VoiceIntent,
+	}
+}
+
+fn encode_reasoning_effort(effort: VoiceReasoningEffort) -> VoxitVoiceReasoningEffort {
+	match effort {
+		VoiceReasoningEffort::Minimal => VoxitVoiceReasoningEffort::Minimal,
+		VoiceReasoningEffort::Low => VoxitVoiceReasoningEffort::Low,
+		VoiceReasoningEffort::Medium => VoxitVoiceReasoningEffort::Medium,
+		VoiceReasoningEffort::High => VoxitVoiceReasoningEffort::High,
+	}
+}
+
+fn encode_output_policy(policy: VoiceOutputPolicy) -> VoxitVoiceOutputPolicy {
+	match policy {
+		VoiceOutputPolicy::InsertText => VoxitVoiceOutputPolicy::InsertText,
+		VoiceOutputPolicy::PreviewBeforeInsert => VoxitVoiceOutputPolicy::PreviewBeforeInsert,
+		VoiceOutputPolicy::ConfirmBeforeAction => VoxitVoiceOutputPolicy::ConfirmBeforeAction,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::{
 		VoxitAuthMethod, VoxitDictationState, VoxitHostConfig, VoxitHostSnapshot, VoxitPlatformTag,
-		VoxitStatus,
+		VoxitPromptProfileKind, VoxitStatus, VoxitVoiceInteractionTier, VoxitVoiceOutputPolicy,
+		VoxitVoiceReasoningEffort,
 	};
 
 	#[test]
@@ -263,6 +382,10 @@ mod tests {
 		assert_eq!(snapshot.auth_method, VoxitAuthMethod::ChatGptDeviceCode);
 		assert_eq!(snapshot.dictation_state, VoxitDictationState::Idle);
 		assert_eq!(snapshot.rewrite_enabled, 1);
+		assert_eq!(snapshot.prompt_profile_kind, VoxitPromptProfileKind::FastDictation);
+		assert_eq!(snapshot.voice_tier, VoxitVoiceInteractionTier::FastDictation);
+		assert_eq!(snapshot.reasoning_effort, VoxitVoiceReasoningEffort::Minimal);
+		assert_eq!(snapshot.output_policy, VoxitVoiceOutputPolicy::InsertText);
 
 		unsafe { crate::voxit_host_session_destroy(handle) };
 	}
