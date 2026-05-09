@@ -1,4 +1,89 @@
-# Rust workspace tasks.
+# Voxit workspace tasks.
+
+# Check
+# | task               | type      | cwd |
+# | ------------------ | --------- | --- |
+# | check              | composite |     |
+# | check-rust         | command   |     |
+# | check-swift        | composite |     |
+# | check-vstyle       | composite |     |
+# | check-vstyle-rust  | command   |     |
+# | check-vstyle-swift | command   |     |
+
+[tasks.check]
+clear = true
+workspace = false
+dependencies = [
+	"fmt-check",
+	"check-rust",
+	"check-swift",
+	"check-vstyle",
+	"test",
+]
+
+[tasks.check-rust]
+workspace = false
+command = "cargo"
+args = [
+	"clippy",
+	"--all-features",
+	"--all-targets",
+	"--workspace",
+	"--",
+	"-D",
+	"clippy::all",
+	"-D",
+	"clippy::too_many_lines",
+	"-D",
+	"clippy::unwrap_used",
+	"-D",
+	"clippy::use_self",
+	"-D",
+	"clippy::wildcard_imports",
+	"-D",
+	"missing-docs",
+	"-D",
+	"unused-crate-dependencies",
+	"-D",
+	"warnings",
+]
+
+[tasks.check-swift]
+workspace = false
+dependencies = [
+	"build-swift-strict",
+]
+
+[tasks.check-vstyle]
+workspace = false
+dependencies = [
+	"check-vstyle-rust",
+	"check-vstyle-swift",
+]
+
+[tasks.check-vstyle-rust]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"curate",
+	"--language",
+	"rust",
+	"--workspace",
+	"--all-features",
+]
+
+[tasks.check-vstyle-swift]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"curate",
+	"--language",
+	"swift",
+	"--workspace",
+	"--all-features",
+]
 
 # Format
 # | task            | type      | cwd |
@@ -50,7 +135,15 @@ args = [
 
 [tasks.fmt-swift-check]
 workspace = false
-extend = "lint-swift-format"
+command = "swift"
+args = [
+	"format",
+	"lint",
+	"--recursive",
+	"--strict",
+	"--parallel",
+	"native/macos-host/Sources",
+]
 
 [tasks.fmt-toml]
 workspace = false
@@ -66,23 +159,15 @@ args = [
 	"--check",
 ]
 
-
 # Lint
-# | task                    | type      | cwd |
-# | ----------------------- | --------- | --- |
-# | lint                    | composite |     |
-# | lint-fix                | composite |     |
-# | lint-fix-rust           | extend    |     |
-# | lint-fix-swift          | composite |     |
-# | lint-fix-vstyle         | composite |     |
-# | lint-fix-vstyle-rust    | command   |     |
-# | lint-fix-vstyle-swift   | command   |     |
-# | lint-rust               | command   |     |
-# | lint-swift              | composite |     |
-# | lint-swift-format       | command   |     |
-# | lint-vstyle             | composite |     |
-# | lint-vstyle-rust        | command   |     |
-# | lint-vstyle-swift       | command   |     |
+# | task               | type      | cwd |
+# | ------------------ | --------- | --- |
+# | lint               | composite |     |
+# | lint-rust          | command   |     |
+# | lint-swift         | composite |     |
+# | lint-vstyle        | composite |     |
+# | lint-vstyle-rust   | command   |     |
+# | lint-vstyle-swift  | command   |     |
 
 [tasks.lint]
 workspace = false
@@ -92,16 +177,9 @@ dependencies = [
 	"lint-vstyle",
 ]
 
-[tasks.lint-fix]
+[tasks.lint-rust]
 workspace = false
-dependencies = [
-	"lint-fix-rust",
-	"lint-fix-swift",
-	"lint-fix-vstyle",
-]
-
-[tasks.lint-fix-rust]
-extend = "lint-rust"
+command = "cargo"
 args = [
 	"clippy",
 	"--fix",
@@ -128,90 +206,11 @@ args = [
 	"warnings",
 ]
 
-[tasks.lint-fix-swift]
+[tasks.lint-swift]
 workspace = false
 dependencies = [
 	"fmt-swift",
 	"build-swift-strict",
-]
-
-[tasks.lint-fix-vstyle]
-workspace = false
-dependencies = [
-	"lint-fix-vstyle-rust",
-	"lint-fix-vstyle-swift",
-]
-
-[tasks.lint-fix-vstyle-rust]
-workspace = false
-command = "cargo"
-args = [
-	"vstyle",
-	"tune",
-	"--language",
-	"rust",
-	"--workspace",
-	"--all-features",
-	"--strict",
-]
-
-[tasks.lint-fix-vstyle-swift]
-workspace = false
-command = "cargo"
-args = [
-	"vstyle",
-	"tune",
-	"--language",
-	"swift",
-	"--workspace",
-	"--all-features",
-	"--strict",
-]
-
-[tasks.lint-rust]
-workspace = false
-command = "cargo"
-args = [
-	"clippy",
-	"--all-features",
-	"--all-targets",
-	"--workspace",
-	"--",
-	"-D",
-	"clippy::all",
-	"-D",
-	"clippy::too_many_lines",
-	"-D",
-	"clippy::unwrap_used",
-	"-D",
-	"clippy::use_self",
-	"-D",
-	"clippy::wildcard_imports",
-	"-D",
-	"missing-docs",
-	"-D",
-	"unused-crate-dependencies",
-	"-D",
-	"warnings",
-]
-
-[tasks.lint-swift]
-workspace = false
-dependencies = [
-	"lint-swift-format",
-	"build-swift-strict",
-]
-
-[tasks.lint-swift-format]
-workspace = false
-command = "swift"
-args = [
-	"format",
-	"lint",
-	"--recursive",
-	"--strict",
-	"--parallel",
-	"native/macos-host/Sources",
 ]
 
 [tasks.lint-vstyle]
@@ -226,11 +225,12 @@ workspace = false
 command = "cargo"
 args = [
 	"vstyle",
-	"curate",
+	"tune",
 	"--language",
 	"rust",
 	"--workspace",
 	"--all-features",
+	"--strict",
 ]
 
 [tasks.lint-vstyle-swift]
@@ -238,64 +238,49 @@ workspace = false
 command = "cargo"
 args = [
 	"vstyle",
-	"curate",
+	"tune",
 	"--language",
 	"swift",
 	"--workspace",
 	"--all-features",
+	"--strict",
 ]
-
-
-# Meta
-# | task   | type      | cwd |
-# | ------ | --------- | --- |
-# | checks | composite |     |
-
-[tasks.checks]
-workspace = false
-dependencies = [
-	"fmt-check",
-	"lint",
-	"test",
-]
-
 
 # Test
 # | task                         | type      | cwd |
 # | ---------------------------- | --------- | --- |
-# | build-host-ffi-staticlib     | command   |     |
-# | build-swift-strict           | command   |     |
-# | test                         | composite | |
-# | test-host-ffi-header         | command   | |
-# | test-macos-native-host       | command   | |
-# | test-macos-native-host-stage | command   | |
-# | test-rust                    | command   | |
-# | test-swift                   | composite | |
-
-[tasks.build-host-ffi-staticlib]
-workspace = false
-script = '''
-MACOSX_DEPLOYMENT_TARGET=14.0 cargo build -p voxit-host-ffi
-'''
-
-[tasks.build-swift-strict]
-workspace = false
-dependencies = [
-	"build-host-ffi-staticlib",
-]
-script = '''
-VOXIT_HOST_FFI_LIB_DIR="$PWD/target/debug" \
-swift build --package-path native/macos-host \
-	--explicit-target-dependency-import-check error \
-	-Xswiftc -warnings-as-errors \
-	-Xswiftc -strict-concurrency=complete
-'''
+# | test                         | composite |     |
+# | test-rust                    | command   |     |
+# | test-swift                   | composite |     |
+# | test-host-ffi-header         | command   |     |
+# | test-macos-native-host       | command   |     |
+# | test-macos-native-host-stage | command   |     |
 
 [tasks.test]
+clear = true
 workspace = false
 dependencies = [
 	"test-rust",
 	"test-swift",
+]
+
+[tasks.test-rust]
+workspace = false
+command = "cargo"
+args = [
+	"nextest",
+	"run",
+	"--workspace",
+	"--all-targets",
+	"--all-features",
+]
+
+[tasks.test-swift]
+workspace = false
+dependencies = [
+	"test-host-ffi-header",
+	"test-macos-native-host",
+	"test-macos-native-host-stage",
 ]
 
 [tasks.test-host-ffi-header]
@@ -340,21 +325,42 @@ plutil -extract CFBundleIconFile raw "$APP_PATH/Contents/Info.plist" | grep -qx 
 plutil -extract LSUIElement raw "$APP_PATH/Contents/Info.plist" | grep -qx 'true'
 '''
 
-[tasks.test-rust]
+# Build
+# | task                     | type    | cwd |
+# | ------------------------ | ------- | --- |
+# | build-host-ffi-staticlib | command |     |
+# | build-swift-strict       | command |     |
+
+[tasks.build-host-ffi-staticlib]
 workspace = false
+env = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
 command = "cargo"
 args = [
-	"nextest",
-	"run",
-	"--workspace",
-	"--all-targets",
-	"--all-features",
+	"build",
+	"-p",
+	"voxit-host-ffi",
 ]
 
-[tasks.test-swift]
+[tasks.build-swift-strict]
 workspace = false
 dependencies = [
-	"test-host-ffi-header",
-	"test-macos-native-host",
-	"test-macos-native-host-stage",
+	"build-host-ffi-staticlib",
+]
+script = '''
+VOXIT_HOST_FFI_LIB_DIR="$PWD/target/debug" \
+swift build --package-path native/macos-host \
+	--explicit-target-dependency-import-check error \
+	-Xswiftc -warnings-as-errors \
+	-Xswiftc -strict-concurrency=complete
+'''
+
+# Meta
+# | task   | type      | cwd |
+# | ------ | --------- | --- |
+# | checks | composite |     |
+
+[tasks.checks]
+workspace = false
+dependencies = [
+	"check",
 ]

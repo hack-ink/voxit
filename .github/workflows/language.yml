@@ -28,7 +28,7 @@ concurrency:
 jobs:
   rust-check:
     name: Rust check
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - name: Fetch latest code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -40,15 +40,20 @@ jobs:
           rustflags: ''
           components: rustfmt, clippy
 
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --component rustfmt
+
       - name: Install cargo-make
         uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: cargo-make
 
-      - name: Install nightly rustfmt
-        run: rustup toolchain install nightly --component rustfmt
+      - name: Install nextest
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
+        with:
+          tool: nextest
 
-      - name: Run Rust format checks
+      - name: Run Rust format check
         run: cargo make fmt-rust-check
 
       - name: Run Rust style check
@@ -60,19 +65,14 @@ jobs:
           version: v0.2.1
 
       - name: Run Rust clippy
-        run: cargo make lint-rust
-
-      - name: Install nextest
-        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
-        with:
-          tool: nextest
+        run: cargo make check-rust
 
       - name: Run Rust tests
         run: cargo make test-rust
 
   swift-check:
     name: Swift check
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - name: Fetch latest code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -94,7 +94,7 @@ jobs:
         with:
           tool: cargo-make
 
-      - name: Run Swift format checks
+      - name: Run Swift format check
         run: cargo make fmt-swift-check
 
       - name: Run Swift style check
@@ -105,10 +105,10 @@ jobs:
           args: --all-features
           version: v0.2.1
 
-      - name: Run Swift lint and strict build
-        run: cargo make lint-swift
+      - name: Run Swift strict build
+        run: cargo make check-swift
 
-      - name: Run native host tests
+      - name: Run Swift tests
         env:
           VOXIT_NATIVE_HOST_SIGN_IDENTITY: '-'
         run: cargo make test-swift
@@ -136,5 +136,5 @@ jobs:
         with:
           tool: taplo
 
-      - name: Run TOML format checks
+      - name: Run TOML format check
         run: cargo make fmt-toml-check
