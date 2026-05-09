@@ -13,7 +13,15 @@ public struct ContentView: View {
     NavigationSplitView {
       SidebarView(selection: $selection, snapshot: store.snapshot)
     } detail: {
-      DetailView(selection: selection, snapshot: store.snapshot, errorMessage: store.errorMessage)
+      DetailView(
+        selection: selection,
+        snapshot: store.snapshot,
+        errorMessage: store.errorMessage
+      ) {
+        Task {
+          await store.refreshFocusedContext()
+        }
+      }
     }
   }
 }

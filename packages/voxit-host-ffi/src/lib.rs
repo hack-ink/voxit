@@ -4,7 +4,7 @@
 //! This gives the Swift host a stable Rust-owned model without moving audio, auth, or
 //! inference orchestration across FFI before those boundaries are ready.
 
-use std::ptr::NonNull;
+use std::{ffi::c_char, ptr::NonNull};
 
 use voxit_core::{
 	Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
@@ -16,11 +16,12 @@ use voxit_core::{
 };
 
 /// ABI version exported by the thin C host bridge.
-pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 2;
+pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 3;
 
 /// Opaque session handle owned by the native host through the C ABI.
 pub struct VoxitHostSessionHandle {
 	snapshot: NativeHostSnapshot,
+	focused_context: FocusedAppContext,
 	voice_plan: VoiceSessionPlan,
 }
 
@@ -152,6 +153,24 @@ pub enum VoxitVoiceOutputPolicy {
 	ConfirmBeforeAction = 2,
 }
 
+/// FFI-safe string fields exposed through copy-out buffers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxitHostStringField {
+	/// Focused app bundle id.
+	FocusedBundleId = 0,
+	/// Focused app display name.
+	FocusedAppName = 1,
+	/// Focused window title.
+	FocusedWindowTitle = 2,
+	/// Focused URL domain.
+	FocusedUrlDomain = 3,
+	/// Focused accessibility element role.
+	FocusedElementRole = 4,
+	/// Selected prompt profile id.
+	PromptProfileId = 5,
+}
+
 /// FFI-safe session configuration.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,6 +199,10 @@ pub struct VoxitHostSnapshot {
 	pub panel_height_px: u32,
 	/// Non-zero when pass-3 rewrite is enabled.
 	pub rewrite_enabled: u8,
+	/// Non-zero when focused app context has at least one routing signal.
+	pub has_focused_context: u8,
+	/// Non-zero when selected text was present at context capture time.
+	pub selected_text_present: u8,
 	/// Selected prompt profile kind.
 	pub prompt_profile_kind: VoxitPromptProfileKind,
 	/// Selected voice interaction tier.
@@ -200,6 +223,8 @@ impl Default for VoxitHostSnapshot {
 			panel_width_px: 0,
 			panel_height_px: 0,
 			rewrite_enabled: 0,
+			has_focused_context: 0,
+			selected_text_present: 0,
 			prompt_profile_kind: VoxitPromptProfileKind::FastDictation,
 			voice_tier: VoxitVoiceInteractionTier::FastDictation,
 			reasoning_effort: VoxitVoiceReasoningEffort::Minimal,
@@ -223,10 +248,12 @@ pub extern "C" fn voxit_host_session_create(
 		VoxitPlatformTag::MacOS => PlatformHost::MacOS,
 		VoxitPlatformTag::Unsupported => PlatformHost::Unsupported,
 	};
-	let snapshot = NativeHostSnapshot::initial(platform, &Config::default());
-	let voice_plan = ContextualVoiceRouter.plan_for_context(&FocusedAppContext::new());
+	let app_config = Config::load().unwrap_or_else(|_| Config::default());
+	let snapshot = NativeHostSnapshot::initial(platform, &app_config);
+	let focused_context = FocusedAppContext::new();
+	let voice_plan = ContextualVoiceRouter.plan_for_context(&focused_context);
 
-	Box::into_raw(Box::new(VoxitHostSessionHandle { snapshot, voice_plan }))
+	Box::into_raw(Box::new(VoxitHostSessionHandle { snapshot, focused_context, voice_plan }))
 }
 
 /// Destroys a Rust-owned native-host session.
@@ -260,11 +287,62 @@ pub unsafe extern "C" fn voxit_host_session_copy_snapshot(
 		return VoxitStatus::NullOutput;
 	};
 	let snapshot = unsafe { &handle.as_ref().snapshot };
+	let focused_context = unsafe { &handle.as_ref().focused_context };
 	let voice_plan = unsafe { &handle.as_ref().voice_plan };
 
-	unsafe { out.as_ptr().write(encode_snapshot(snapshot, voice_plan)) };
+	unsafe {
+		out.as_ptr().write(encode_snapshot_with_context(snapshot, focused_context, voice_plan))
+	};
 
 	VoxitStatus::Ok
+}
+
+/// Refreshes focused app context and recomputes the Rust-owned voice session plan.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_refresh_focused_context(
+	handle: *mut VoxitHostSessionHandle,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	handle.focused_context = capture_focused_context();
+	handle.voice_plan = ContextualVoiceRouter.plan_for_context(&handle.focused_context);
+
+	VoxitStatus::Ok
+}
+
+/// Copies a Rust-owned string field into caller-owned memory.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+/// `out` must point to writable memory for `out_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_copy_string(
+	handle: *mut VoxitHostSessionHandle,
+	field: VoxitHostStringField,
+	out: *mut c_char,
+	out_len: usize,
+) -> VoxitStatus {
+	let Some(handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let Some(out) = NonNull::new(out) else {
+		return VoxitStatus::NullOutput;
+	};
+	if out_len == 0 {
+		return VoxitStatus::InvalidInput;
+	}
+	let handle = unsafe { handle.as_ref() };
+	let value = string_field_value(handle, field);
+
+	write_c_string(out, out_len, value)
 }
 
 fn encode_snapshot(
@@ -280,11 +358,26 @@ fn encode_snapshot(
 		panel_width_px: snapshot.panel_width_px,
 		panel_height_px: snapshot.panel_height_px,
 		rewrite_enabled: u8::from(snapshot.rewrite_enabled),
+		has_focused_context: 0,
+		selected_text_present: 0,
 		prompt_profile_kind: encode_prompt_profile_kind(voice_plan.profile_kind),
 		voice_tier: encode_voice_tier(voice_plan.tier),
 		reasoning_effort: encode_reasoning_effort(voice_plan.reasoning_effort),
 		output_policy: encode_output_policy(voice_plan.output_policy),
 	}
+}
+
+fn encode_snapshot_with_context(
+	snapshot: &NativeHostSnapshot,
+	focused_context: &FocusedAppContext,
+	voice_plan: &VoiceSessionPlan,
+) -> VoxitHostSnapshot {
+	let mut encoded = encode_snapshot(snapshot, voice_plan);
+
+	encoded.has_focused_context = u8::from(!focused_context.is_empty());
+	encoded.selected_text_present = u8::from(focused_context.selected_text_present);
+
+	encoded
 }
 
 fn encode_platform(platform: PlatformHost) -> VoxitPlatformTag {
@@ -362,12 +455,69 @@ fn encode_output_policy(policy: VoiceOutputPolicy) -> VoxitVoiceOutputPolicy {
 	}
 }
 
+fn string_field_value(handle: &VoxitHostSessionHandle, field: VoxitHostStringField) -> &str {
+	match field {
+		VoxitHostStringField::FocusedBundleId =>
+			handle.focused_context.bundle_id.as_deref().unwrap_or_default(),
+		VoxitHostStringField::FocusedAppName =>
+			handle.focused_context.app_name.as_deref().unwrap_or_default(),
+		VoxitHostStringField::FocusedWindowTitle =>
+			handle.focused_context.window_title.as_deref().unwrap_or_default(),
+		VoxitHostStringField::FocusedUrlDomain =>
+			handle.focused_context.url_domain.as_deref().unwrap_or_default(),
+		VoxitHostStringField::FocusedElementRole =>
+			handle.focused_context.focused_element_role.as_deref().unwrap_or_default(),
+		VoxitHostStringField::PromptProfileId => &handle.voice_plan.profile_id,
+	}
+}
+
+fn write_c_string(out: NonNull<c_char>, out_len: usize, value: &str) -> VoxitStatus {
+	let bytes = value.as_bytes();
+	let copy_len = bytes.len().min(out_len.saturating_sub(1));
+
+	unsafe {
+		std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_ptr().cast::<u8>(), copy_len);
+		*out.as_ptr().add(copy_len) = 0;
+	}
+
+	VoxitStatus::Ok
+}
+
+fn capture_focused_context() -> FocusedAppContext {
+	#[cfg(target_os = "macos")]
+	if let Some(target) = voxit_macos::capture_frontmost_app() {
+		return focused_context_from_target(target);
+	}
+
+	FocusedAppContext::new()
+}
+
+#[cfg(target_os = "macos")]
+fn focused_context_from_target(target: voxit_macos::TargetApp) -> FocusedAppContext {
+	let mut context = FocusedAppContext::new();
+
+	if let (Some(bundle_id), Some(app_name)) = (target.bundle_id, target.app_name) {
+		context = context.with_app(bundle_id, app_name);
+	}
+	if let Some(window_title) = target.window_title {
+		context = context.with_window_title(window_title);
+	}
+	if let Some(url_domain) = target.url_domain {
+		context = context.with_url_domain(url_domain);
+	}
+	if let Some(role) = target.focused_element_role {
+		context = context.with_focused_element_role(role);
+	}
+
+	context.with_selected_text_present(target.selected_text_present)
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::{
-		VoxitAuthMethod, VoxitDictationState, VoxitHostConfig, VoxitHostSnapshot, VoxitPlatformTag,
-		VoxitPromptProfileKind, VoxitStatus, VoxitVoiceInteractionTier, VoxitVoiceOutputPolicy,
-		VoxitVoiceReasoningEffort,
+		VoxitAuthMethod, VoxitDictationState, VoxitHostConfig, VoxitHostSnapshot,
+		VoxitHostStringField, VoxitPlatformTag, VoxitPromptProfileKind, VoxitStatus,
+		VoxitVoiceInteractionTier, VoxitVoiceOutputPolicy, VoxitVoiceReasoningEffort,
 	};
 
 	#[test]
@@ -382,10 +532,32 @@ mod tests {
 		assert_eq!(snapshot.auth_method, VoxitAuthMethod::ChatGptDeviceCode);
 		assert_eq!(snapshot.dictation_state, VoxitDictationState::Idle);
 		assert_eq!(snapshot.rewrite_enabled, 1);
+		assert_eq!(snapshot.has_focused_context, 0);
+		assert_eq!(snapshot.selected_text_present, 0);
 		assert_eq!(snapshot.prompt_profile_kind, VoxitPromptProfileKind::FastDictation);
 		assert_eq!(snapshot.voice_tier, VoxitVoiceInteractionTier::FastDictation);
 		assert_eq!(snapshot.reasoning_effort, VoxitVoiceReasoningEffort::Minimal);
 		assert_eq!(snapshot.output_policy, VoxitVoiceOutputPolicy::InsertText);
+
+		unsafe { crate::voxit_host_session_destroy(handle) };
+	}
+
+	#[test]
+	fn string_copy_null_terminates_buffer() {
+		let handle =
+			crate::voxit_host_session_create(VoxitHostConfig { platform: VoxitPlatformTag::MacOS });
+		let mut buffer = [1_i8; 4];
+		let status = unsafe {
+			crate::voxit_host_session_copy_string(
+				handle,
+				VoxitHostStringField::PromptProfileId,
+				buffer.as_mut_ptr(),
+				buffer.len(),
+			)
+		};
+
+		assert_eq!(status, VoxitStatus::Ok);
+		assert_eq!(buffer[3], 0);
 
 		unsafe { crate::voxit_host_session_destroy(handle) };
 	}

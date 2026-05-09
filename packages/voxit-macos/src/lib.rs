@@ -10,6 +10,7 @@ use std::{ffi::c_void, mem, thread, time::Duration};
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 #[cfg(target_os = "macos")]
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+use url::Url;
 
 #[cfg(target_os = "macos")]
 type CfDictionaryRef = *const c_void;
@@ -25,11 +26,25 @@ pub struct TargetApp {
 	pub bundle_id: Option<String>,
 	/// Frontmost application name.
 	pub app_name: Option<String>,
+	/// Focused window title when available.
+	pub window_title: Option<String>,
+	/// Browser or webview URL domain when available.
+	pub url_domain: Option<String>,
+	/// Focused accessibility element role when available.
+	pub focused_element_role: Option<String>,
+	/// Whether selected text was present when capture started.
+	pub selected_text_present: bool,
 }
 impl TargetApp {
 	/// Whether all fields are missing.
 	pub fn is_empty(&self) -> bool {
-		self.pid.is_none() && self.bundle_id.is_none() && self.app_name.is_none()
+		self.pid.is_none()
+			&& self.bundle_id.is_none()
+			&& self.app_name.is_none()
+			&& self.window_title.is_none()
+			&& self.url_domain.is_none()
+			&& self.focused_element_role.is_none()
+			&& !self.selected_text_present
 	}
 
 	fn log_id(&self) -> String {
@@ -301,23 +316,53 @@ pub fn activate_target(_target: &TargetApp, _attempts: u32, _base_delay: Duratio
 #[cfg(target_os = "macos")]
 fn capture_frontmost_app_impl() -> Result<TargetApp, String> {
 	let script = r#"tell application "System Events"
-		set front_process to first application process whose frontmost is true
-		set front_pid to unix id of front_process
-		set front_name to name of front_process
+			set front_process to first application process whose frontmost is true
+			set front_pid to unix id of front_process
+			set front_name to name of front_process
 		try
 			set front_bundle to bundle identifier of front_process
-		on error
-			set front_bundle to ""
-		end try
-		return front_pid & "|" & front_bundle & "|" & front_name
-	end tell"#;
+			on error
+				set front_bundle to ""
+			end try
+			set front_window_title to ""
+			try
+				set front_window_title to name of front window of front_process
+			end try
+			set focused_role to ""
+			set selected_text_present to "false"
+			try
+				set focused_element to value of attribute "AXFocusedUIElement" of front_process
+				try
+					set focused_role to role of focused_element
+				end try
+				try
+					set selected_text to value of attribute "AXSelectedText" of focused_element
+					if selected_text is not missing value and selected_text is not "" then
+						set selected_text_present to "true"
+					end if
+				end try
+			end try
+			return front_pid & "|" & front_bundle & "|" & front_name & "|" & front_window_title & "|" & focused_role & "|" & selected_text_present
+		end tell"#;
 	let output = execute_applescript_raw(script)?;
-	let mut parts = output.splitn(3, '|');
+	let mut parts = output.splitn(6, '|');
 	let pid = parts.next().and_then(parse_u32_trimmed);
 	let bundle_id = parts.next().and_then(normalize_optional_string);
 	let app_name = parts.next().and_then(normalize_optional_string);
+	let window_title = parts.next().and_then(normalize_optional_string);
+	let focused_element_role = parts.next().and_then(normalize_optional_string);
+	let selected_text_present = parts.next().is_some_and(|raw| raw.trim() == "true");
+	let url_domain = capture_url_domain(bundle_id.as_deref(), app_name.as_deref());
 
-	Ok(TargetApp { pid, bundle_id, app_name })
+	Ok(TargetApp {
+		pid,
+		bundle_id,
+		app_name,
+		window_title,
+		url_domain,
+		focused_element_role,
+		selected_text_present,
+	})
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -356,6 +401,48 @@ fn execute_applescript_raw(script: &str) -> Result<String, String> {
 	let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
 	Ok(stdout.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn capture_url_domain(bundle_id: Option<&str>, app_name: Option<&str>) -> Option<String> {
+	let script = browser_url_script(bundle_id, app_name)?;
+	let url = execute_applescript_raw(&script).ok()?;
+
+	parse_domain(&url)
+}
+
+#[cfg(target_os = "macos")]
+fn browser_url_script(bundle_id: Option<&str>, app_name: Option<&str>) -> Option<String> {
+	let identity = bundle_id.or(app_name)?.to_ascii_lowercase();
+
+	if identity.contains("safari") {
+		return Some(r#"tell application "Safari" to return URL of front document"#.to_string());
+	}
+	if identity.contains("chrome") {
+		return Some(
+			r#"tell application "Google Chrome" to return URL of active tab of front window"#
+				.to_string(),
+		);
+	}
+	if identity.contains("microsoft.edgemac") || identity.contains("microsoft edge") {
+		return Some(
+			r#"tell application "Microsoft Edge" to return URL of active tab of front window"#
+				.to_string(),
+		);
+	}
+	if identity.contains("company.thebrowser.browser") || identity.contains("arc") {
+		return Some(
+			r#"tell application "Arc" to return URL of active tab of front window"#.to_string(),
+		);
+	}
+
+	None
+}
+
+fn parse_domain(raw_url: &str) -> Option<String> {
+	let url = Url::parse(raw_url.trim()).ok()?;
+
+	url.host_str().map(|domain| domain.trim_start_matches("www.").to_ascii_lowercase())
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -1634,6 +1634,7 @@ name = "voxit-host-ffi"
 version = "0.1.0"
 dependencies = [
  "voxit-core",
+ "voxit-macos",
 ]
 
 [[package]]
@@ -1644,6 +1645,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-av-foundation",
  "tracing",
+ "url",
 ]
 
 [[package]]

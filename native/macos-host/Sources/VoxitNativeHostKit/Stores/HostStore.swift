@@ -20,6 +20,16 @@ public final class HostStore: ObservableObject {
     }
   }
 
+  public func refreshFocusedContext() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.refreshFocusedContext()
+      errorMessage = nil
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
   private func currentSession() throws -> VoxitHostSession {
     if let session {
       return session

@@ -77,6 +77,16 @@ impl FocusedAppContext {
 		Self::default()
 	}
 
+	/// Whether the context has no routing signal.
+	pub fn is_empty(&self) -> bool {
+		self.bundle_id.as_deref().is_none_or(str::is_empty)
+			&& self.app_name.as_deref().is_none_or(str::is_empty)
+			&& self.window_title.as_deref().is_none_or(str::is_empty)
+			&& self.url_domain.as_deref().is_none_or(str::is_empty)
+			&& self.focused_element_role.as_deref().is_none_or(str::is_empty)
+			&& !self.selected_text_present
+	}
+
 	/// Attach app identity to the context.
 	pub fn with_app(mut self, bundle_id: impl Into<String>, app_name: impl Into<String>) -> Self {
 		self.bundle_id = Some(bundle_id.into());
@@ -88,6 +98,27 @@ impl FocusedAppContext {
 	/// Attach a URL domain to the context.
 	pub fn with_url_domain(mut self, url_domain: impl Into<String>) -> Self {
 		self.url_domain = Some(url_domain.into());
+
+		self
+	}
+
+	/// Attach a focused window title to the context.
+	pub fn with_window_title(mut self, window_title: impl Into<String>) -> Self {
+		self.window_title = Some(window_title.into());
+
+		self
+	}
+
+	/// Attach the focused accessibility role to the context.
+	pub fn with_focused_element_role(mut self, focused_element_role: impl Into<String>) -> Self {
+		self.focused_element_role = Some(focused_element_role.into());
+
+		self
+	}
+
+	/// Attach selected-text presence to the context.
+	pub fn with_selected_text_present(mut self, selected_text_present: bool) -> Self {
+		self.selected_text_present = selected_text_present;
 
 		self
 	}

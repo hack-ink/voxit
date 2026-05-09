@@ -67,6 +67,14 @@ public struct HostSnapshot: Equatable, Sendable {
   public var panelWidth: Int
   public var panelHeight: Int
   public var rewriteEnabled: Bool
+  public var hasFocusedContext: Bool
+  public var selectedTextPresent: Bool
+  public var focusedBundleID: String?
+  public var focusedAppName: String?
+  public var focusedWindowTitle: String?
+  public var focusedURLDomain: String?
+  public var focusedElementRole: String?
+  public var promptProfileID: String?
   public var promptProfileKind: PromptProfileKind
   public var voiceTier: VoiceInteractionTier
   public var reasoningEffort: VoiceReasoningEffort
@@ -81,6 +89,14 @@ public struct HostSnapshot: Equatable, Sendable {
     panelWidth: Int,
     panelHeight: Int,
     rewriteEnabled: Bool,
+    hasFocusedContext: Bool,
+    selectedTextPresent: Bool,
+    focusedBundleID: String?,
+    focusedAppName: String?,
+    focusedWindowTitle: String?,
+    focusedURLDomain: String?,
+    focusedElementRole: String?,
+    promptProfileID: String?,
     promptProfileKind: PromptProfileKind,
     voiceTier: VoiceInteractionTier,
     reasoningEffort: VoiceReasoningEffort,
@@ -94,6 +110,14 @@ public struct HostSnapshot: Equatable, Sendable {
     self.panelWidth = panelWidth
     self.panelHeight = panelHeight
     self.rewriteEnabled = rewriteEnabled
+    self.hasFocusedContext = hasFocusedContext
+    self.selectedTextPresent = selectedTextPresent
+    self.focusedBundleID = focusedBundleID
+    self.focusedAppName = focusedAppName
+    self.focusedWindowTitle = focusedWindowTitle
+    self.focusedURLDomain = focusedURLDomain
+    self.focusedElementRole = focusedElementRole
+    self.promptProfileID = promptProfileID
     self.promptProfileKind = promptProfileKind
     self.voiceTier = voiceTier
     self.reasoningEffort = reasoningEffort
@@ -179,6 +203,15 @@ public final class VoxitHostSession {
     return try decode(snapshot: outSnapshot)
   }
 
+  public func refreshFocusedContext() throws -> HostSnapshot {
+    try requireOk(
+      voxit_host_session_refresh_focused_context(handle),
+      context: "refreshing focused context"
+    )
+
+    return try currentSnapshot()
+  }
+
   private func requireOk(_ status: VoxitStatus, context: String) throws {
     let code = voxit_status_code(status)
     if code != 0 {
@@ -196,11 +229,34 @@ public final class VoxitHostSession {
       panelWidth: Int(snapshot.panel_width_px),
       panelHeight: Int(snapshot.panel_height_px),
       rewriteEnabled: snapshot.rewrite_enabled != 0,
+      hasFocusedContext: snapshot.has_focused_context != 0,
+      selectedTextPresent: snapshot.selected_text_present != 0,
+      focusedBundleID: try copyString(field: VOXIT_HOST_STRING_FOCUSED_BUNDLE_ID),
+      focusedAppName: try copyString(field: VOXIT_HOST_STRING_FOCUSED_APP_NAME),
+      focusedWindowTitle: try copyString(field: VOXIT_HOST_STRING_FOCUSED_WINDOW_TITLE),
+      focusedURLDomain: try copyString(field: VOXIT_HOST_STRING_FOCUSED_URL_DOMAIN),
+      focusedElementRole: try copyString(field: VOXIT_HOST_STRING_FOCUSED_ELEMENT_ROLE),
+      promptProfileID: try copyString(field: VOXIT_HOST_STRING_PROMPT_PROFILE_ID),
       promptProfileKind: try decode(promptProfileKind: snapshot.prompt_profile_kind),
       voiceTier: try decode(voiceTier: snapshot.voice_tier),
       reasoningEffort: try decode(reasoningEffort: snapshot.reasoning_effort),
       outputPolicy: try decode(outputPolicy: snapshot.output_policy)
     )
+  }
+
+  private func copyString(field: VoxitHostStringField) throws -> String? {
+    var buffer = [CChar](repeating: 0, count: 1024)
+    let bufferCount = buffer.count
+    try buffer.withUnsafeMutableBufferPointer { pointer in
+      try requireOk(
+        voxit_host_session_copy_string(handle, field, pointer.baseAddress, UInt(bufferCount)),
+        context: "copying host string"
+      )
+    }
+    let endIndex = buffer.firstIndex(of: 0) ?? buffer.endIndex
+    let bytes = buffer[..<endIndex].map { UInt8(bitPattern: $0) }
+    let value = String(decoding: bytes, as: UTF8.self)
+    return value.isEmpty ? nil : value
   }
 
   private func decode(platform: VoxitPlatformTag) throws -> HostPlatform {

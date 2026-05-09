@@ -15,3 +15,6 @@ path       = "src/lib.rs"
 
 [dependencies]
 voxit-core = { path = "../voxit-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+voxit-macos = { path = "../voxit-macos" }

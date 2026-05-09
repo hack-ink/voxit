@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define VOXIT_HOST_FFI_ABI_VERSION 2u
+#define VOXIT_HOST_FFI_ABI_VERSION 3u
 
 typedef struct VoxitHostSessionHandle VoxitHostSessionHandle;
 
@@ -75,6 +75,15 @@ typedef enum VoxitVoiceOutputPolicy {
 	VOXIT_OUTPUT_POLICY_CONFIRM_BEFORE_ACTION = 2,
 } VoxitVoiceOutputPolicy;
 
+typedef enum VoxitHostStringField {
+	VOXIT_HOST_STRING_FOCUSED_BUNDLE_ID = 0,
+	VOXIT_HOST_STRING_FOCUSED_APP_NAME = 1,
+	VOXIT_HOST_STRING_FOCUSED_WINDOW_TITLE = 2,
+	VOXIT_HOST_STRING_FOCUSED_URL_DOMAIN = 3,
+	VOXIT_HOST_STRING_FOCUSED_ELEMENT_ROLE = 4,
+	VOXIT_HOST_STRING_PROMPT_PROFILE_ID = 5,
+} VoxitHostStringField;
+
 typedef struct VoxitHostConfig {
 	enum VoxitPlatformTag platform;
 } VoxitHostConfig;
@@ -88,6 +97,8 @@ typedef struct VoxitHostSnapshot {
 	uint32_t panel_width_px;
 	uint32_t panel_height_px;
 	uint8_t rewrite_enabled;
+	uint8_t has_focused_context;
+	uint8_t selected_text_present;
 	enum VoxitPromptProfileKind prompt_profile_kind;
 	enum VoxitVoiceInteractionTier voice_tier;
 	enum VoxitVoiceReasoningEffort reasoning_effort;
@@ -97,9 +108,16 @@ typedef struct VoxitHostSnapshot {
 uint32_t voxit_host_ffi_abi_version(void);
 VoxitHostSessionHandle *voxit_host_session_create(struct VoxitHostConfig config);
 void voxit_host_session_destroy(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_refresh_focused_context(VoxitHostSessionHandle *handle);
 enum VoxitStatus voxit_host_session_copy_snapshot(
 	VoxitHostSessionHandle *handle,
 	struct VoxitHostSnapshot *out
+);
+enum VoxitStatus voxit_host_session_copy_string(
+	VoxitHostSessionHandle *handle,
+	enum VoxitHostStringField field,
+	char *out,
+	uintptr_t out_len
 );
 
 #ifdef __cplusplus

@@ -111,3 +111,18 @@ extension VoiceOutputPolicy {
     }
   }
 }
+
+extension HostSnapshot {
+  var focusedAppLabel: String {
+    if let focusedAppName {
+      return focusedAppName
+    }
+    if let focusedBundleID {
+      return focusedBundleID
+    }
+    if let focusedURLDomain {
+      return focusedURLDomain
+    }
+    return "No Context"
+  }
+}

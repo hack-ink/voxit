@@ -5,6 +5,7 @@ struct DetailView: View {
   var selection: NavigationItem
   var snapshot: HostSnapshot?
   var errorMessage: String?
+  var refreshFocusedContext: () -> Void
 
   var body: some View {
     ScrollView {
@@ -18,7 +19,7 @@ struct DetailView: View {
 
         switch selection {
         case .activity:
-          ActivityDetail(snapshot: snapshot)
+          ActivityDetail(snapshot: snapshot, refreshFocusedContext: refreshFocusedContext)
         case .appRules:
           AppRulesDetail()
         case .profiles:
@@ -45,6 +46,7 @@ struct DetailView: View {
 
 private struct ActivityDetail: View {
   var snapshot: HostSnapshot?
+  var refreshFocusedContext: () -> Void
 
   var body: some View {
     LabeledContentGrid {
@@ -78,9 +80,22 @@ private struct ActivityDetail: View {
         value: snapshot?.outputPolicy.label ?? "Loading",
         systemImage: "text.cursor"
       )
+      StatusCard(
+        title: "Focused App",
+        value: snapshot?.focusedAppLabel ?? "No Context",
+        systemImage: "app.connected.to.app.below.fill"
+      )
+      StatusCard(
+        title: "Window",
+        value: snapshot?.focusedWindowTitle ?? snapshot?.focusedURLDomain ?? "No Context",
+        systemImage: "macwindow"
+      )
     }
 
     HStack(spacing: 10) {
+      Button("Refresh Focus", systemImage: "scope") {
+        refreshFocusedContext()
+      }
       Button("Start Recording", systemImage: "record.circle") {}
         .buttonStyle(.borderedProminent)
         .disabled(true)
