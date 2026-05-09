@@ -14,26 +14,26 @@ default        = ["voxit-realtime"]
 voxit-realtime = ["dep:futures-util", "dep:http", "dep:tokio", "dep:tokio-tungstenite"]
 
 [dependencies]
-base64            = { version = "0.22" }
-directories       = { version = "6.0" }
-futures-util      = { version = "0.3", optional = true }
-hound             = { version = "3.5" }
-http              = { version = "1.3", optional = true }
-keyring           = { version = "3.6", features = ["apple-native"] }
-reqwest           = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart", "rustls"] }
-serde             = { version = "1.0", features = ["derive"] }
-serde_json        = { version = "1.0" }
-sha2              = { version = "0.10" }
-tokio             = { version = "1.47", features = ["rt-multi-thread", "time"], optional = true }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"], optional = true }
-tracing           = { version = "0.1" }
-url               = { version = "2.5" }
-voxit-audio       = { path = "../voxit-audio" }
-webbrowser        = { version = "1.1" }
+base64            = { workspace = true }
+directories       = { workspace = true }
+futures-util      = { workspace = true, optional = true }
+http              = { workspace = true, optional = true }
+keyring           = { workspace = true }
+reqwest           = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+sha2              = { workspace = true }
+tokio             = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+tracing           = { workspace = true }
+url               = { workspace = true }
+voxit-audio       = { workspace = true }
+webbrowser        = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation            = { version = "0.10" }
-core-foundation-sys        = { version = "0.8" }
-objc2-foundation           = { version = "0.3.2", default-features = false, features = ["NSObjCRuntime", "NSObject", "NSString", "alloc", "std"] }
-objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["LAContext", "alloc", "std"] }
-security-framework-sys     = { version = "2.16" }
+core-foundation            = { workspace = true }
+core-foundation-sys        = { workspace = true }
+hound                      = { workspace = true }
+objc2-foundation           = { workspace = true }
+objc2-local-authentication = { workspace = true }
+security-framework-sys     = { workspace = true }

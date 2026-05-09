@@ -15,7 +15,13 @@ public struct VoxitNativeHostApp: App {
         .frame(minWidth: 720, minHeight: 460)
         .task {
           VoxitArtwork.applyApplicationIcon()
+          configureSettingsSync()
           await store.reload()
+          await store.savePreferences(settingsStore.settings)
+          await store.setGlossary(UserDefaults.standard.string(forKey: "glossaryTerms") ?? "")
+          let profileOverrideRaw =
+            UserDefaults.standard.string(forKey: "profileOverride") ?? ProfileOverride.auto.rawValue
+          await store.setProfileOverride(ProfileOverride(rawValue: profileOverrideRaw)?.profileKind)
         }
     }
     .commands {
@@ -27,12 +33,21 @@ public struct VoxitNativeHostApp: App {
       }
 
       CommandGroup(after: .appInfo) {
-        Button("Start Dictation") {}
-          .keyboardShortcut(
-            settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
-            modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
-          )
-          .disabled(true)
+        Button("Start Dictation") {
+          startDictation()
+        }
+        .keyboardShortcut(
+          settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
+          modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
+        )
+
+        Button("Stop Dictation") {
+          Task {
+            await store.stopDictation()
+          }
+        }
+        .keyboardShortcut(".", modifiers: [.command])
+        .disabled(store.snapshot?.dictationState != .listening)
 
         Divider()
 
@@ -45,6 +60,15 @@ public struct VoxitNativeHostApp: App {
       }
     }
 
+    Window("Voxit Recording", id: "recording-hud") {
+      RecordingHUDView(store: store)
+        .task {
+          await store.reload()
+        }
+    }
+    .windowResizability(.contentSize)
+    .defaultPosition(.topTrailing)
+
     MenuBarExtra {
       Button("Open Voxit") {
         openWindow(id: "main")
@@ -52,12 +76,20 @@ public struct VoxitNativeHostApp: App {
       }
       .keyboardShortcut("o", modifiers: [.command])
 
-      Button("Start Dictation") {}
-        .keyboardShortcut(
-          settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
-          modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
-        )
-        .disabled(true)
+      Button("Start Dictation") {
+        startDictation()
+      }
+      .keyboardShortcut(
+        settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
+        modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
+      )
+
+      Button("Stop Dictation") {
+        Task {
+          await store.stopDictation()
+        }
+      }
+      .disabled(store.snapshot?.dictationState != .listening)
 
       Divider()
 
@@ -83,6 +115,23 @@ public struct VoxitNativeHostApp: App {
       Image(nsImage: VoxitArtwork.statusBarImage())
         .renderingMode(.template)
         .foregroundStyle(.primary)
+    }
+  }
+
+  @MainActor
+  private func configureSettingsSync() {
+    settingsStore.setSyncHandler { settings in
+      Task {
+        await store.savePreferences(settings)
+      }
+    }
+  }
+
+  @MainActor
+  private func startDictation() {
+    openWindow(id: "recording-hud")
+    Task {
+      await store.startDictation()
     }
   }
 

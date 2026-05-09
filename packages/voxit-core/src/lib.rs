@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod contextual;
 pub mod inference;
 pub mod openai;
 pub mod realtime;
@@ -17,9 +18,13 @@ pub use self::{
 		sign_in_with_device_code_with_progress, sign_out, status,
 	},
 	config::Config,
+	contextual::{
+		ContextualVoiceRouter, FocusedAppContext, PromptProfile, PromptProfileKind,
+		VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort, VoiceSessionPlan,
+	},
 	inference::{
-		InferenceEvent, RewriteResult, RewriteState, rewrite_only, start_realtime_session,
-		transcribe_only,
+		InferenceEvent, RewriteResult, RewriteSettings, RewriteState, rewrite_only,
+		rewrite_only_with_plan, start_realtime_session, transcribe_only,
 	},
 	realtime::{
 		REALTIME_ENDPOINT, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig,

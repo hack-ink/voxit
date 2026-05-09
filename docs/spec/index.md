@@ -57,3 +57,6 @@ Then keep the body explicit:
 
 - [`runtime.md`](./runtime.md) defines the runtime scope, auth flow, audio capture,
   transcript pipeline, paste behavior, configuration keys, and known gaps.
+- [`contextual-voice.md`](./contextual-voice.md) defines context-aware voice input,
+  prompt profile routing, interaction tiers, reasoning effort, output policy, and the
+  host/core ownership boundary.

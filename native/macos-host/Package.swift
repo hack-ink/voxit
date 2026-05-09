@@ -28,10 +28,13 @@ let package = Package(
 			name: "VoxitHostBridge",
 			dependencies: ["CVoxitHostFFI"],
 			linkerSettings: [
-				.linkedFramework("AppKit"),
-				.linkedFramework("AudioToolbox"),
-				.linkedFramework("CoreAudio"),
-				.linkedFramework("Security"),
+					.linkedFramework("AppKit"),
+					.linkedFramework("ApplicationServices"),
+					.linkedFramework("AudioToolbox"),
+					.linkedFramework("AVFoundation"),
+					.linkedFramework("CoreAudio"),
+					.linkedFramework("CoreFoundation"),
+					.linkedFramework("Security"),
 				.unsafeFlags([
 					"-L",
 					rustLibDir,

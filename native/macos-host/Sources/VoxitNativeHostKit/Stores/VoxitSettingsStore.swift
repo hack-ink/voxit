@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import VoxitHostBridge
 
 @MainActor
 final class VoxitSettingsStore: ObservableObject {
@@ -18,6 +19,7 @@ final class VoxitSettingsStore: ObservableObject {
   }
 
   private let defaults: UserDefaults
+  private var syncHandler: ((VoxitSettings) -> Void)?
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
@@ -53,7 +55,12 @@ final class VoxitSettingsStore: ObservableObject {
     let sanitized = next.sanitized()
     settings = sanitized
     Self.persist(sanitized, into: defaults)
+    syncHandler?(sanitized)
     NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+  }
+
+  func setSyncHandler(_ syncHandler: @escaping (VoxitSettings) -> Void) {
+    self.syncHandler = syncHandler
   }
 
   private static func persist(_ settings: VoxitSettings, into defaults: UserDefaults) {
@@ -112,7 +119,7 @@ struct VoxitSettings: Equatable {
 
   private static func parseHotkeyPresentation(_ raw: String) -> VoxitHotkeyPresentation? {
     let tokens = hotkeyTokens(from: raw)
-    guard !tokens.isEmpty else {
+    guard tokens.isEmpty == false else {
       return nil
     }
 
@@ -183,7 +190,7 @@ struct VoxitSettings: Equatable {
         character == "+" || character == "-"
       }
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
+      .filter { $0.isEmpty == false }
   }
 }
 
@@ -205,6 +212,15 @@ enum VoxitHotkeyModePreference: String, CaseIterable, Identifiable {
       return "Toggle"
     case .hold:
       return "Hold"
+    }
+  }
+
+  var hostBridgeValue: HotkeyMode {
+    switch self {
+    case .toggle:
+      return .toggle
+    case .hold:
+      return .hold
     }
   }
 }

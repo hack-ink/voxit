@@ -3,7 +3,7 @@ import VoxitHostBridge
 
 public struct ContentView: View {
   @ObservedObject var store: HostStore
-  @SceneStorage("selection") private var selection: NavigationItem = .dictation
+  @SceneStorage("selection") private var selection: NavigationItem = .activity
 
   public init(store: HostStore) {
     self.store = store
@@ -13,7 +13,41 @@ public struct ContentView: View {
     NavigationSplitView {
       SidebarView(selection: $selection, snapshot: store.snapshot)
     } detail: {
-      DetailView(selection: selection, snapshot: store.snapshot, errorMessage: store.errorMessage)
+      DetailView(
+        selection: selection,
+        snapshot: store.snapshot,
+        errorMessage: store.errorMessage,
+        refreshFocusedContext: {
+          Task {
+            await store.refreshFocusedContext()
+          }
+        },
+        startDictation: {
+          Task {
+            await store.startDictation()
+          }
+        },
+        stopDictation: {
+          Task {
+            await store.stopDictation()
+          }
+        },
+        pasteFinalOutput: {
+          Task {
+            await store.pasteFinalOutput()
+          }
+        },
+        setProfileOverride: { profileKind in
+          Task {
+            await store.setProfileOverride(profileKind)
+          }
+        },
+        setGlossary: { glossaryTerms in
+          Task {
+            await store.setGlossary(glossaryTerms)
+          }
+        }
+      )
     }
   }
 }

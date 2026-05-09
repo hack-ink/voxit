@@ -24,6 +24,9 @@ Defines:
 - Build entrypoint is the SwiftPM native macOS host under `native/macos-host/`.
 - Voxit uses Rust Core plus a platform host: shared runtime and platform-neutral model
   contracts stay in Rust crates, while Swift owns the macOS UI.
+- Context-aware voice behavior is governed by
+  [`contextual-voice.md`](./contextual-voice.md). The runtime must treat raw
+  transcription as one step in a broader contextual voice input pipeline.
 - The staged app bundle is a menu bar utility (`LSUIElement = true`) with a SwiftUI
   `MenuBarExtra` and an on-demand Voxit window.
 - The app supports English-first behavior and configuration defaults (`language = "en"`).
@@ -32,7 +35,8 @@ Defines:
 
 ## 2) State Machine
 
-The runtime state is user-visible in `self.state` and UI status labels:
+The runtime state is user-visible through the Rust-owned native-host snapshot rendered
+by Swift:
 
 - `Ready to listen.`
 - `Listening`
@@ -43,16 +47,19 @@ The runtime state is user-visible in `self.state` and UI status labels:
 
 State transitions:
 
-- `Start Dictation` or hotkey start in **toggle** mode -> `Listening`.
+- `Start Dictation` or menu shortcut start in **toggle** mode -> capture focused
+  context, start recording, and enter `Listening`.
 - `Stop Dictation` or hotkey release in **hold** mode -> stop capture, encode WAV, then
   `FinalizingPass2`.
 - Pass2 completion:
   - if auto rewrite is enabled -> `RewritingPass3`
-  - else -> paste raw final transcript and `Done`
+  - else -> set final output to raw transcript and `Done`
 - Pass3 completion:
-  - if guard passes -> paste rewritten result and `Done`
-  - if skipped or rejected -> paste raw result and `Done`
-- `Paste raw now (skip rewrite)` during Pass2 or Pass3 forces raw paste and sets `Done`.
+  - if guard passes -> set final output to rewritten result and `Done`
+  - if skipped or rejected -> set final output to raw transcript and `Done`
+- If the active output policy is `insert_text`, the runtime pastes final output into the
+  captured target automatically. Preview and confirmation policies leave output in the
+  HUD for explicit paste.
 
 ## 3) Authentication Contract
 
@@ -137,6 +144,8 @@ State transitions:
   - keep meaning
   - preserve numeric, date, and currency tokens
   - reject rewrite when the protected token multiset changes
+  - enforce `rewrite.max_output_chars`
+  - apply `rewrite.style` and any user glossary terms to prompt construction
 - Guarded outcomes:
   - `Applied`: paste rewritten text
   - `Rejected`: fallback to raw Pass2 and paste raw
@@ -146,6 +155,8 @@ State transitions:
 
 - Before starting recording, capture frontmost app metadata (pid, bundle id, name) if
   `lock_frontmost_app = true`.
+- Focus context capture also records available window title, URL domain, focused element
+  role, and selected-text presence for Rust-owned prompt routing.
 - On paste:
   - attempt to reactivate captured target app with retries
   - copy to clipboard
@@ -156,24 +167,26 @@ State transitions:
 
 - Hotkey chord handling:
   - supported mode switch: toggle or hold
-  - currently recognized physical combo: `Ctrl+Shift+Space`
-  - configuration exposes `hotkey.chord` for future use
+  - the menu command uses the configured `hotkey.chord` presentation
+  - system-wide hotkey capture is not active yet
 - Menu bar behavior:
   - `MenuBarExtra` exposes `Open Voxit` (`Cmd+O`), `Settings...` (`Cmd+,`),
-    `Refresh Status` (`Cmd+R`), and `Quit Voxit` (`Cmd+Q`).
-  - `Start Dictation` displays the configured dictation shortcut presentation, but
-    remains disabled until the Swift menu action is wired to the Rust runtime command.
+    `Start Dictation`, `Stop Dictation`, `Refresh Status` (`Cmd+R`), and `Quit Voxit`
+    (`Cmd+Q`).
+  - `Start Dictation` and `Stop Dictation` call the Rust host FFI command surface.
   - `Settings...` opens a dedicated AppKit-hosted Settings window.
   - The Settings window handles `Cmd+W` to close and `Cmd+Q` to terminate.
 
 ## 9) UI and Onboarding Contract
 
-- UI contains:
-  - auth status and sign-in actions
-  - runtime controls (start/stop, rewrite toggle, hotkey mode)
-  - live stream sections (committed plus draft)
-  - final transcript sections
-  - onboarding checklist statuses for microphone, accessibility, and input monitoring
+- UI surfaces are split by responsibility:
+  - menu bar: always-available status and control
+  - recording HUD: live session state, transcript preview, active profile, and paste
+    controls
+  - Voxit control-center window: activity, app rules, profiles, glossary, prompt lab,
+    and debug/evaluation surfaces
+  - Settings window: app preferences, shortcuts, microphone, permissions, account
+    defaults, privacy, logging, and notifications
 - Onboarding checklist provides request actions for required macOS permissions. The UI
   prompts permission requests in order:
   - Microphone: probe-based request and retry loop when denied
@@ -183,9 +196,12 @@ State transitions:
   re-check in Voxit before continuing.
 - "Paste raw now" is always available when finalization or rewrite is active and should
   bypass Pass3.
+- The Control Center exposes the current focused context, selected profile, profile
+  override, glossary terms, and prompt lab sample state. Profile override and glossary
+  terms are passed back through Rust FFI before model calls.
 - The Swift native host must render platform-neutral Rust model snapshots from
   `packages/voxit-core/` through `packages/voxit-host-ffi/` instead of defining a
-  separate UI state machine.
+  separate UI state machine, contextual routing policy, or prompt profile registry.
 
 ## 10) Configuration Contract
 
@@ -217,7 +233,7 @@ On load:
 Current Swift Settings window:
 
 - persists shell preferences in macOS `UserDefaults`
-- does not yet write those preferences through the Rust `config.toml` path
+- writes supported preferences through the Rust host FFI into `config.toml`
 
 ## 11) CI and Release
 
@@ -237,13 +253,13 @@ Current Swift Settings window:
 
 ## 13) Known Gaps
 
-- Swift Settings write-through to `config.toml` is not implemented yet.
-- Menu-driven start/stop dictation is visible but not wired to the Rust runtime command
-  yet.
-- Configured hotkey chord string is not yet mapped; current hardcoded gesture is
-  `Ctrl+Shift+Space` only.
+- System-wide global hotkey capture is not implemented yet; the configured shortcut is
+  currently a Swift menu command.
+- The native HUD does not yet render Pass1 realtime draft/committed transcript events;
+  it shows active profile/state plus raw and final output after Pass2/Pass3.
+- App-rule authoring is not implemented yet; users can refresh focus context and
+  manually override the active built-in profile.
+- The Swift Settings audio picker still exposes only System Default even though Rust can
+  resolve configured CoreAudio input device ids.
 - CPAL fallback capture is not implemented despite a configuration option; only the
   VoiceProcessingIO path is active.
-- `rewrite.max_output_chars` and `rewrite.style` are persisted but not strictly
-  enforced in the rewrite prompt yet.
-- No explicit audio resampling step to 24 kHz is implemented in the current path.

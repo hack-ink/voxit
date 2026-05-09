@@ -37,6 +37,7 @@ pub(crate) struct TranscriptionRequest<'a> {
 pub(crate) struct RewriteRequest<'a> {
 	pub(crate) text: &'a str,
 	pub(crate) model: &'a str,
+	pub(crate) instructions: &'a str,
 }
 
 /// Resolve the only provider enabled in the first provider-abstraction version.

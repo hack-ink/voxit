@@ -20,6 +20,86 @@ public final class HostStore: ObservableObject {
     }
   }
 
+  public func refreshFocusedContext() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.refreshFocusedContext()
+      errorMessage = nil
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  public func startDictation() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.startDictation()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  public func stopDictation() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.stopDictation()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  public func pasteFinalOutput() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.pasteFinalOutput()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  func savePreferences(_ settings: VoxitSettings) async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.savePreferences(
+        hotkeyChord: settings.dictationHotkey,
+        hotkeyMode: settings.hotkeyMode.hostBridgeValue,
+        startHidden: settings.startHidden,
+        pasteAfterTranscription: settings.pasteAfterTranscription,
+        rewriteAfterTranscription: settings.rewriteAfterTranscription
+      )
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  func setProfileOverride(_ profileKind: PromptProfileKind?) async {
+    do {
+      let session = try currentSession()
+      if let profileKind {
+        snapshot = try session.setProfileOverride(profileKind)
+      } else {
+        snapshot = try session.clearProfileOverride()
+      }
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  func setGlossary(_ glossaryTerms: String) async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.setGlossary(glossaryTerms)
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
   private func currentSession() throws -> VoxitHostSession {
     if let session {
       return session
