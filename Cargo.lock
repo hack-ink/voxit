@@ -1633,6 +1633,7 @@ dependencies = [
 name = "voxit-host-ffi"
 version = "0.1.0"
 dependencies = [
+ "voxit-audio",
  "voxit-core",
  "voxit-macos",
 ]

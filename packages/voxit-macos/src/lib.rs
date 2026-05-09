@@ -1,9 +1,12 @@
 //! macOS target app capture and activation helpers.
 
 #[cfg(not(target_os = "macos"))] use std::io::{self, Error, ErrorKind};
-#[cfg(target_os = "macos")] use std::process::Command;
 #[cfg(target_os = "macos")] use std::ptr;
 use std::{ffi::c_void, mem, thread, time::Duration};
+#[cfg(target_os = "macos")] use std::{
+	io::Write as _,
+	process::{Command, Stdio},
+};
 
 #[cfg(target_os = "macos")] use block2::RcBlock;
 #[cfg(target_os = "macos")]
@@ -313,6 +316,30 @@ pub fn activate_target(_target: &TargetApp, _attempts: u32, _base_delay: Duratio
 	false
 }
 
+/// Copy text to the clipboard and dispatch a paste gesture into the selected target.
+#[cfg(target_os = "macos")]
+pub fn paste_text(target: Option<&TargetApp>, text: &str, lock_target: bool) -> Result<(), String> {
+	if text.is_empty() {
+		return Err("nothing to paste".to_string());
+	}
+	if lock_target && let Some(target) = target {
+		let _ = activate_target(target, 3, Duration::from_millis(80));
+	}
+
+	copy_to_clipboard(text)?;
+	dispatch_command_v()
+}
+
+/// Paste helper for non-macOS builds.
+#[cfg(not(target_os = "macos"))]
+pub fn paste_text(
+	_target: Option<&TargetApp>,
+	_text: &str,
+	_lock_target: bool,
+) -> Result<(), String> {
+	Err("paste is only supported on macOS in this build".to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn capture_frontmost_app_impl() -> Result<TargetApp, String> {
 	let script = r#"tell application "System Events"
@@ -401,6 +428,30 @@ fn execute_applescript_raw(script: &str) -> Result<String, String> {
 	let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
 	Ok(stdout.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+	let mut child = Command::new("pbcopy")
+		.stdin(Stdio::piped())
+		.spawn()
+		.map_err(|err| format!("spawn pbcopy failed: {err}"))?;
+	let Some(stdin) = child.stdin.as_mut() else {
+		return Err("pbcopy stdin unavailable".to_string());
+	};
+
+	stdin.write_all(text.as_bytes()).map_err(|err| format!("write pbcopy failed: {err}"))?;
+	let status = child.wait().map_err(|err| format!("wait pbcopy failed: {err}"))?;
+
+	if status.success() { Ok(()) } else { Err(format!("pbcopy failed with status {status}")) }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_command_v() -> Result<(), String> {
+	execute_applescript_raw(
+		r#"tell application "System Events" to keystroke "v" using command down"#,
+	)
+	.map(|_| ())
 }
 
 #[cfg(target_os = "macos")]

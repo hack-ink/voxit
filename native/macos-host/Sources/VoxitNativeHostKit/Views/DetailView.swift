@@ -6,6 +6,9 @@ struct DetailView: View {
   var snapshot: HostSnapshot?
   var errorMessage: String?
   var refreshFocusedContext: () -> Void
+  var startDictation: () -> Void
+  var stopDictation: () -> Void
+  var pasteFinalOutput: () -> Void
 
   var body: some View {
     ScrollView {
@@ -19,7 +22,13 @@ struct DetailView: View {
 
         switch selection {
         case .activity:
-          ActivityDetail(snapshot: snapshot, refreshFocusedContext: refreshFocusedContext)
+          ActivityDetail(
+            snapshot: snapshot,
+            refreshFocusedContext: refreshFocusedContext,
+            startDictation: startDictation,
+            stopDictation: stopDictation,
+            pasteFinalOutput: pasteFinalOutput
+          )
         case .appRules:
           AppRulesDetail()
         case .profiles:
@@ -47,6 +56,9 @@ struct DetailView: View {
 private struct ActivityDetail: View {
   var snapshot: HostSnapshot?
   var refreshFocusedContext: () -> Void
+  var startDictation: () -> Void
+  var stopDictation: () -> Void
+  var pasteFinalOutput: () -> Void
 
   var body: some View {
     LabeledContentGrid {
@@ -81,6 +93,11 @@ private struct ActivityDetail: View {
         systemImage: "text.cursor"
       )
       StatusCard(
+        title: "Last Run",
+        value: snapshot?.recordingSummary ?? "No Runs",
+        systemImage: "timer"
+      )
+      StatusCard(
         title: "Focused App",
         value: snapshot?.focusedAppLabel ?? "No Context",
         systemImage: "app.connected.to.app.below.fill"
@@ -96,11 +113,26 @@ private struct ActivityDetail: View {
       Button("Refresh Focus", systemImage: "scope") {
         refreshFocusedContext()
       }
-      Button("Start Recording", systemImage: "record.circle") {}
-        .buttonStyle(.borderedProminent)
-        .disabled(true)
-      Button("Paste Raw", systemImage: "text.badge.checkmark") {}
-        .disabled(true)
+      Button("Start Recording", systemImage: "record.circle") {
+        startDictation()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(snapshot?.dictationState == .listening)
+      Button("Stop", systemImage: "stop.circle") {
+        stopDictation()
+      }
+      .disabled(snapshot?.dictationState != .listening)
+      Button("Paste Final", systemImage: "text.badge.checkmark") {
+        pasteFinalOutput()
+      }
+      .disabled(snapshot?.hasFinalOutput != true)
+    }
+
+    if let finalOutput = snapshot?.finalOutput {
+      TranscriptPreview(title: "Final Output", text: finalOutput)
+    }
+    if let rawTranscript = snapshot?.rawTranscript {
+      TranscriptPreview(title: "Raw Transcript", text: rawTranscript)
     }
   }
 }
@@ -168,6 +200,25 @@ private struct PromptLabDetail: View {
       StatusCard(title: "Comparison", value: "No Runs", systemImage: "rectangle.split.2x1")
       StatusCard(title: "Reasoning", value: "Profile Default", systemImage: "brain")
     }
+  }
+}
+
+private struct TranscriptPreview: View {
+  var title: String
+  var text: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Text(text)
+        .font(.body)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(14)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
   }
 }
 

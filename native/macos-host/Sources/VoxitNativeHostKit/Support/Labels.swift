@@ -125,4 +125,14 @@ extension HostSnapshot {
     }
     return "No Context"
   }
+
+  var recordingSummary: String {
+    if recordingDurationMS > 0 {
+      return "\(recordingDurationMS) ms"
+    }
+    if hasRawTranscript || hasFinalOutput {
+      return "Completed"
+    }
+    return "No Runs"
+  }
 }

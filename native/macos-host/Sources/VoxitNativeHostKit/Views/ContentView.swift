@@ -16,12 +16,28 @@ public struct ContentView: View {
       DetailView(
         selection: selection,
         snapshot: store.snapshot,
-        errorMessage: store.errorMessage
-      ) {
-        Task {
-          await store.refreshFocusedContext()
+        errorMessage: store.errorMessage,
+        refreshFocusedContext: {
+          Task {
+            await store.refreshFocusedContext()
+          }
+        },
+        startDictation: {
+          Task {
+            await store.startDictation()
+          }
+        },
+        stopDictation: {
+          Task {
+            await store.stopDictation()
+          }
+        },
+        pasteFinalOutput: {
+          Task {
+            await store.pasteFinalOutput()
+          }
         }
-      }
+      )
     }
   }
 }

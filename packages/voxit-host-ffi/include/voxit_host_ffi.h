@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define VOXIT_HOST_FFI_ABI_VERSION 3u
+#define VOXIT_HOST_FFI_ABI_VERSION 4u
 
 typedef struct VoxitHostSessionHandle VoxitHostSessionHandle;
 
@@ -82,6 +82,10 @@ typedef enum VoxitHostStringField {
 	VOXIT_HOST_STRING_FOCUSED_URL_DOMAIN = 3,
 	VOXIT_HOST_STRING_FOCUSED_ELEMENT_ROLE = 4,
 	VOXIT_HOST_STRING_PROMPT_PROFILE_ID = 5,
+	VOXIT_HOST_STRING_PROMPT_DIRECTIVE = 6,
+	VOXIT_HOST_STRING_RAW_TRANSCRIPT = 7,
+	VOXIT_HOST_STRING_FINAL_OUTPUT = 8,
+	VOXIT_HOST_STRING_LAST_ERROR = 9,
 } VoxitHostStringField;
 
 typedef struct VoxitHostConfig {
@@ -99,6 +103,10 @@ typedef struct VoxitHostSnapshot {
 	uint8_t rewrite_enabled;
 	uint8_t has_focused_context;
 	uint8_t selected_text_present;
+	uint8_t has_raw_transcript;
+	uint8_t has_final_output;
+	uint8_t has_error;
+	uint64_t recording_duration_ms;
 	enum VoxitPromptProfileKind prompt_profile_kind;
 	enum VoxitVoiceInteractionTier voice_tier;
 	enum VoxitVoiceReasoningEffort reasoning_effort;
@@ -109,6 +117,9 @@ uint32_t voxit_host_ffi_abi_version(void);
 VoxitHostSessionHandle *voxit_host_session_create(struct VoxitHostConfig config);
 void voxit_host_session_destroy(VoxitHostSessionHandle *handle);
 enum VoxitStatus voxit_host_session_refresh_focused_context(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_start_dictation(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_stop_dictation(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_paste_final_output(VoxitHostSessionHandle *handle);
 enum VoxitStatus voxit_host_session_copy_snapshot(
 	VoxitHostSessionHandle *handle,
 	struct VoxitHostSnapshot *out

@@ -8,21 +8,31 @@ use std::{ffi::c_char, ptr::NonNull};
 
 use voxit_core::{
 	Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
-	VoiceSessionPlan,
+	RewriteSettings, VoiceSessionPlan,
 	contextual::{
 		PromptProfileKind, VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort,
 	},
+	rewrite_only_with_plan, transcribe_only,
 	ui_model::{AuthMethod, AuthSurfaceState, DictationSurfaceState, HotkeySurfaceMode},
 };
 
 /// ABI version exported by the thin C host bridge.
-pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 3;
+pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 4;
 
 /// Opaque session handle owned by the native host through the C ABI.
 pub struct VoxitHostSessionHandle {
+	config: Config,
 	snapshot: NativeHostSnapshot,
 	focused_context: FocusedAppContext,
 	voice_plan: VoiceSessionPlan,
+	last_raw_transcript: String,
+	last_final_output: String,
+	last_error: String,
+	recording_duration_ms: u64,
+	#[cfg(target_os = "macos")]
+	recorder: Option<voxit_audio::Recorder>,
+	#[cfg(target_os = "macos")]
+	target_app: Option<voxit_macos::TargetApp>,
 }
 
 /// Result code returned by FFI entry points.
@@ -169,6 +179,14 @@ pub enum VoxitHostStringField {
 	FocusedElementRole = 4,
 	/// Selected prompt profile id.
 	PromptProfileId = 5,
+	/// Selected prompt directive.
+	PromptDirective = 6,
+	/// Latest raw Pass2 transcript.
+	RawTranscript = 7,
+	/// Latest final output after rewrite or fallback.
+	FinalOutput = 8,
+	/// Latest user-actionable error.
+	LastError = 9,
 }
 
 /// FFI-safe session configuration.
@@ -203,6 +221,14 @@ pub struct VoxitHostSnapshot {
 	pub has_focused_context: u8,
 	/// Non-zero when selected text was present at context capture time.
 	pub selected_text_present: u8,
+	/// Non-zero when a raw Pass2 transcript is available.
+	pub has_raw_transcript: u8,
+	/// Non-zero when a final output is available.
+	pub has_final_output: u8,
+	/// Non-zero when the last command failed or produced a warning.
+	pub has_error: u8,
+	/// Last recording duration reported by audio capture.
+	pub recording_duration_ms: u64,
 	/// Selected prompt profile kind.
 	pub prompt_profile_kind: VoxitPromptProfileKind,
 	/// Selected voice interaction tier.
@@ -225,6 +251,10 @@ impl Default for VoxitHostSnapshot {
 			rewrite_enabled: 0,
 			has_focused_context: 0,
 			selected_text_present: 0,
+			has_raw_transcript: 0,
+			has_final_output: 0,
+			has_error: 0,
+			recording_duration_ms: 0,
 			prompt_profile_kind: VoxitPromptProfileKind::FastDictation,
 			voice_tier: VoxitVoiceInteractionTier::FastDictation,
 			reasoning_effort: VoxitVoiceReasoningEffort::Minimal,
@@ -248,12 +278,25 @@ pub extern "C" fn voxit_host_session_create(
 		VoxitPlatformTag::MacOS => PlatformHost::MacOS,
 		VoxitPlatformTag::Unsupported => PlatformHost::Unsupported,
 	};
-	let app_config = Config::load().unwrap_or_else(|_| Config::default());
-	let snapshot = NativeHostSnapshot::initial(platform, &app_config);
+	let config = Config::load().unwrap_or_else(|_| Config::default());
+	let snapshot = NativeHostSnapshot::initial(platform, &config);
 	let focused_context = FocusedAppContext::new();
 	let voice_plan = ContextualVoiceRouter.plan_for_context(&focused_context);
 
-	Box::into_raw(Box::new(VoxitHostSessionHandle { snapshot, focused_context, voice_plan }))
+	Box::into_raw(Box::new(VoxitHostSessionHandle {
+		config,
+		snapshot,
+		focused_context,
+		voice_plan,
+		last_raw_transcript: String::new(),
+		last_final_output: String::new(),
+		last_error: String::new(),
+		recording_duration_ms: 0,
+		#[cfg(target_os = "macos")]
+		recorder: None,
+		#[cfg(target_os = "macos")]
+		target_app: None,
+	}))
 }
 
 /// Destroys a Rust-owned native-host session.
@@ -286,12 +329,18 @@ pub unsafe extern "C" fn voxit_host_session_copy_snapshot(
 	let Some(out) = NonNull::new(out) else {
 		return VoxitStatus::NullOutput;
 	};
-	let snapshot = unsafe { &handle.as_ref().snapshot };
-	let focused_context = unsafe { &handle.as_ref().focused_context };
-	let voice_plan = unsafe { &handle.as_ref().voice_plan };
+	let handle_ref = unsafe { handle.as_ref() };
+	let snapshot = &handle_ref.snapshot;
+	let focused_context = &handle_ref.focused_context;
+	let voice_plan = &handle_ref.voice_plan;
 
 	unsafe {
-		out.as_ptr().write(encode_snapshot_with_context(snapshot, focused_context, voice_plan))
+		out.as_ptr().write(encode_snapshot_with_context(
+			handle_ref,
+			snapshot,
+			focused_context,
+			voice_plan,
+		))
 	};
 
 	VoxitStatus::Ok
@@ -311,10 +360,61 @@ pub unsafe extern "C" fn voxit_host_session_refresh_focused_context(
 	};
 	let handle = unsafe { handle.as_mut() };
 
-	handle.focused_context = capture_focused_context();
+	refresh_focused_context(handle);
 	handle.voice_plan = ContextualVoiceRouter.plan_for_context(&handle.focused_context);
 
 	VoxitStatus::Ok
+}
+
+/// Starts a native dictation capture session.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_start_dictation(
+	handle: *mut VoxitHostSessionHandle,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	start_dictation(handle)
+}
+
+/// Stops capture, finalizes transcription, optionally rewrites, and applies output policy.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_stop_dictation(
+	handle: *mut VoxitHostSessionHandle,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	stop_dictation(handle)
+}
+
+/// Pastes the latest final output into the captured target app.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_paste_final_output(
+	handle: *mut VoxitHostSessionHandle,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	paste_final_output(handle)
 }
 
 /// Copies a Rust-owned string field into caller-owned memory.
@@ -345,6 +445,174 @@ pub unsafe extern "C" fn voxit_host_session_copy_string(
 	write_c_string(out, out_len, value)
 }
 
+fn start_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
+	clear_run_output(handle);
+	refresh_focused_context(handle);
+	handle.voice_plan = ContextualVoiceRouter.plan_for_context(&handle.focused_context);
+
+	#[cfg(target_os = "macos")]
+	{
+		if handle.recorder.is_some() {
+			set_error(handle, "recording is already active");
+
+			return VoxitStatus::Ok;
+		}
+
+		let preferred_device_id = (handle.config.audio.input_device_id != 0)
+			.then_some(handle.config.audio.input_device_id);
+		match voxit_audio::start_recording_with_stream(64, preferred_device_id) {
+			Ok((recorder, _chunk_rx, selection)) => {
+				handle.recorder = Some(recorder);
+				handle.snapshot.dictation_state = DictationSurfaceState::Listening;
+				handle.recording_duration_ms = 0;
+				if selection.fallback_to_default {
+					handle.last_error = format!(
+						"requested microphone unavailable; using {}",
+						selection.selected_device_name
+					);
+				}
+			},
+			Err(err) => {
+				handle.snapshot.dictation_state = DictationSurfaceState::Idle;
+				set_error(handle, format!("failed to start recording: {err}"));
+			},
+		}
+
+		return VoxitStatus::Ok;
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	{
+		handle.snapshot.dictation_state = DictationSurfaceState::Idle;
+		set_error(handle, "recording is only supported on macOS in this build");
+
+		VoxitStatus::Ok
+	}
+}
+
+fn stop_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
+	#[cfg(target_os = "macos")]
+	{
+		let Some(recorder) = handle.recorder.take() else {
+			set_error(handle, "recording is not active");
+
+			return VoxitStatus::Ok;
+		};
+
+		handle.snapshot.dictation_state = DictationSurfaceState::Finalizing;
+		let recording = match voxit_audio::stop_recording(recorder) {
+			Ok(recording) => recording,
+			Err(err) => {
+				handle.snapshot.dictation_state = DictationSurfaceState::Done;
+				set_error(handle, format!("failed to stop recording: {err}"));
+
+				return VoxitStatus::Ok;
+			},
+		};
+		handle.recording_duration_ms = recording.duration_ms;
+
+		let (raw_transcript, _) =
+			match transcribe_only(&recording.wav, &handle.config.openai.finalize_model) {
+				Ok(result) => result,
+				Err(err) => {
+					handle.snapshot.dictation_state = DictationSurfaceState::Done;
+					set_error(handle, format!("transcription failed: {err}"));
+
+					return VoxitStatus::Ok;
+				},
+			};
+		handle.last_raw_transcript = raw_transcript;
+		handle.last_final_output = handle.last_raw_transcript.clone();
+
+		if handle.config.rewrite.enabled && handle.config.rewrite.auto {
+			handle.snapshot.dictation_state = DictationSurfaceState::Rewriting;
+			let settings = rewrite_settings(&handle.config);
+			match rewrite_only_with_plan(
+				&handle.last_raw_transcript,
+				&handle.config.openai.rewrite_model,
+				&handle.voice_plan,
+				&settings,
+			) {
+				Ok((result, _)) => {
+					if let Some(rewritten) = result.rewritten_transcript {
+						handle.last_final_output = rewritten;
+					}
+					if let Some(reason) = result.reason {
+						handle.last_error = reason;
+					}
+				},
+				Err(err) => {
+					handle.last_error = format!("rewrite failed: {err}");
+				},
+			}
+		}
+
+		handle.snapshot.dictation_state = DictationSurfaceState::Done;
+		if matches!(handle.voice_plan.output_policy, VoiceOutputPolicy::InsertText) {
+			let _ = paste_final_output(handle);
+		}
+
+		return VoxitStatus::Ok;
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	{
+		handle.snapshot.dictation_state = DictationSurfaceState::Done;
+		set_error(handle, "recording is only supported on macOS in this build");
+
+		VoxitStatus::Ok
+	}
+}
+
+fn paste_final_output(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
+	#[cfg(target_os = "macos")]
+	{
+		if handle.last_final_output.is_empty() {
+			set_error(handle, "no final output is available to paste");
+
+			return VoxitStatus::Ok;
+		}
+		let target =
+			if handle.config.paste.lock_frontmost_app { handle.target_app.as_ref() } else { None };
+
+		if let Err(err) = voxit_macos::paste_text(
+			target,
+			&handle.last_final_output,
+			handle.config.paste.lock_frontmost_app,
+		) {
+			set_error(handle, format!("paste failed: {err}"));
+		}
+
+		return VoxitStatus::Ok;
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	{
+		set_error(handle, "paste is only supported on macOS in this build");
+
+		VoxitStatus::Ok
+	}
+}
+
+fn clear_run_output(handle: &mut VoxitHostSessionHandle) {
+	handle.last_raw_transcript.clear();
+	handle.last_final_output.clear();
+	handle.last_error.clear();
+	handle.recording_duration_ms = 0;
+}
+
+fn set_error(handle: &mut VoxitHostSessionHandle, message: impl Into<String>) {
+	handle.last_error = message.into();
+}
+
+fn rewrite_settings(config: &Config) -> RewriteSettings {
+	RewriteSettings {
+		guard_protected_tokens: config.rewrite.guard_numbers,
+		max_output_chars: config.rewrite.max_output_chars,
+		style: config.rewrite.style.clone(),
+	}
+}
+
 fn encode_snapshot(
 	snapshot: &NativeHostSnapshot,
 	voice_plan: &VoiceSessionPlan,
@@ -360,6 +628,10 @@ fn encode_snapshot(
 		rewrite_enabled: u8::from(snapshot.rewrite_enabled),
 		has_focused_context: 0,
 		selected_text_present: 0,
+		has_raw_transcript: 0,
+		has_final_output: 0,
+		has_error: 0,
+		recording_duration_ms: 0,
 		prompt_profile_kind: encode_prompt_profile_kind(voice_plan.profile_kind),
 		voice_tier: encode_voice_tier(voice_plan.tier),
 		reasoning_effort: encode_reasoning_effort(voice_plan.reasoning_effort),
@@ -368,6 +640,7 @@ fn encode_snapshot(
 }
 
 fn encode_snapshot_with_context(
+	handle: &VoxitHostSessionHandle,
 	snapshot: &NativeHostSnapshot,
 	focused_context: &FocusedAppContext,
 	voice_plan: &VoiceSessionPlan,
@@ -376,6 +649,10 @@ fn encode_snapshot_with_context(
 
 	encoded.has_focused_context = u8::from(!focused_context.is_empty());
 	encoded.selected_text_present = u8::from(focused_context.selected_text_present);
+	encoded.has_raw_transcript = u8::from(!handle.last_raw_transcript.is_empty());
+	encoded.has_final_output = u8::from(!handle.last_final_output.is_empty());
+	encoded.has_error = u8::from(!handle.last_error.is_empty());
+	encoded.recording_duration_ms = handle.recording_duration_ms;
 
 	encoded
 }
@@ -468,6 +745,10 @@ fn string_field_value(handle: &VoxitHostSessionHandle, field: VoxitHostStringFie
 		VoxitHostStringField::FocusedElementRole =>
 			handle.focused_context.focused_element_role.as_deref().unwrap_or_default(),
 		VoxitHostStringField::PromptProfileId => &handle.voice_plan.profile_id,
+		VoxitHostStringField::PromptDirective => &handle.voice_plan.prompt_directive,
+		VoxitHostStringField::RawTranscript => &handle.last_raw_transcript,
+		VoxitHostStringField::FinalOutput => &handle.last_final_output,
+		VoxitHostStringField::LastError => &handle.last_error,
 	}
 }
 
@@ -483,13 +764,20 @@ fn write_c_string(out: NonNull<c_char>, out_len: usize, value: &str) -> VoxitSta
 	VoxitStatus::Ok
 }
 
-fn capture_focused_context() -> FocusedAppContext {
+fn refresh_focused_context(handle: &mut VoxitHostSessionHandle) {
 	#[cfg(target_os = "macos")]
 	if let Some(target) = voxit_macos::capture_frontmost_app() {
-		return focused_context_from_target(target);
+		handle.focused_context = focused_context_from_target(target.clone());
+		handle.target_app = Some(target);
+
+		return;
 	}
 
-	FocusedAppContext::new()
+	handle.focused_context = FocusedAppContext::new();
+	#[cfg(target_os = "macos")]
+	{
+		handle.target_app = None;
+	}
 }
 
 #[cfg(target_os = "macos")]

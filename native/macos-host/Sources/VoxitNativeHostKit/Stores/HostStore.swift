@@ -30,6 +30,36 @@ public final class HostStore: ObservableObject {
     }
   }
 
+  public func startDictation() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.startDictation()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  public func stopDictation() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.stopDictation()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  public func pasteFinalOutput() async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.pasteFinalOutput()
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
   private func currentSession() throws -> VoxitHostSession {
     if let session {
       return session
