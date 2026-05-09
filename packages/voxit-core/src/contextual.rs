@@ -38,6 +38,23 @@ pub enum VoiceOutputPolicy {
 	ConfirmBeforeAction,
 }
 
+/// Built-in prompt profile selected by contextual routing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptProfileKind {
+	/// Default low-latency dictation profile.
+	FastDictation,
+	/// Messaging profile for short conversational destinations.
+	Messaging,
+	/// Mail profile for complete email prose.
+	Mail,
+	/// Code editor profile for programming-related dictation.
+	CodeEditor,
+	/// Terminal profile for command-like proposals.
+	Terminal,
+	/// Work tracker profile for issue, review, and planning destinations.
+	WorkTracker,
+}
+
 /// Host-collected context for the app that was focused when dictation started.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FocusedAppContext {
@@ -79,6 +96,8 @@ impl FocusedAppContext {
 /// Prompt profile selected by contextual routing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptProfile {
+	/// Built-in profile kind.
+	pub kind: PromptProfileKind,
 	/// Stable profile id.
 	pub id: String,
 	/// Human-readable profile title.
@@ -93,19 +112,22 @@ pub struct PromptProfile {
 impl PromptProfile {
 	/// Build a prompt profile.
 	pub fn new(
+		kind: PromptProfileKind,
 		id: impl Into<String>,
 		title: impl Into<String>,
 		tier: VoiceInteractionTier,
 		reasoning_effort: VoiceReasoningEffort,
 		output_policy: VoiceOutputPolicy,
 	) -> Self {
-		Self { id: id.into(), title: title.into(), tier, reasoning_effort, output_policy }
+		Self { kind, id: id.into(), title: title.into(), tier, reasoning_effort, output_policy }
 	}
 }
 
 /// Concrete plan for one voice session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceSessionPlan {
+	/// Selected built-in prompt profile.
+	pub profile_kind: PromptProfileKind,
 	/// Selected profile id.
 	pub profile_id: String,
 	/// Selected profile display title.
@@ -120,6 +142,7 @@ pub struct VoiceSessionPlan {
 impl VoiceSessionPlan {
 	fn from_profile(profile: PromptProfile) -> Self {
 		Self {
+			profile_kind: profile.kind,
 			profile_id: profile.id,
 			profile_title: profile.title,
 			tier: profile.tier,
@@ -180,6 +203,7 @@ fn context_text(context: &FocusedAppContext) -> Option<String> {
 
 fn default_dictation_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::FastDictation,
 		"fast-dictation",
 		"Fast Dictation",
 		VoiceInteractionTier::FastDictation,
@@ -190,6 +214,7 @@ fn default_dictation_profile() -> PromptProfile {
 
 fn messaging_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::Messaging,
 		"messaging",
 		"Messaging",
 		VoiceInteractionTier::ContextRewrite,
@@ -200,6 +225,7 @@ fn messaging_profile() -> PromptProfile {
 
 fn mail_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::Mail,
 		"mail",
 		"Mail",
 		VoiceInteractionTier::ContextRewrite,
@@ -210,6 +236,7 @@ fn mail_profile() -> PromptProfile {
 
 fn code_editor_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::CodeEditor,
 		"code-editor",
 		"Code Editor",
 		VoiceInteractionTier::ContextRewrite,
@@ -220,6 +247,7 @@ fn code_editor_profile() -> PromptProfile {
 
 fn terminal_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::Terminal,
 		"terminal",
 		"Terminal",
 		VoiceInteractionTier::VoiceIntent,
@@ -230,6 +258,7 @@ fn terminal_profile() -> PromptProfile {
 
 fn work_tracker_profile() -> PromptProfile {
 	PromptProfile::new(
+		PromptProfileKind::WorkTracker,
 		"work-tracker",
 		"Work Tracker",
 		VoiceInteractionTier::ContextRewrite,
@@ -241,8 +270,8 @@ fn work_tracker_profile() -> PromptProfile {
 #[cfg(test)]
 mod tests {
 	use crate::contextual::{
-		ContextualVoiceRouter, FocusedAppContext, VoiceInteractionTier, VoiceOutputPolicy,
-		VoiceReasoningEffort,
+		ContextualVoiceRouter, FocusedAppContext, PromptProfileKind, VoiceInteractionTier,
+		VoiceOutputPolicy, VoiceReasoningEffort,
 	};
 
 	#[test]
@@ -250,6 +279,7 @@ mod tests {
 		let router = ContextualVoiceRouter;
 		let plan = router.plan_for_context(&FocusedAppContext::new());
 
+		assert_eq!(plan.profile_kind, PromptProfileKind::FastDictation);
 		assert_eq!(plan.profile_id, "fast-dictation");
 		assert_eq!(plan.tier, VoiceInteractionTier::FastDictation);
 		assert_eq!(plan.output_policy, VoiceOutputPolicy::InsertText);
@@ -262,6 +292,7 @@ mod tests {
 		let context = FocusedAppContext::new().with_app("com.tinyspeck.slackmacgap", "Slack");
 		let plan = router.plan_for_context(&context);
 
+		assert_eq!(plan.profile_kind, PromptProfileKind::Messaging);
 		assert_eq!(plan.profile_id, "messaging");
 		assert_eq!(plan.tier, VoiceInteractionTier::ContextRewrite);
 		assert_eq!(plan.output_policy, VoiceOutputPolicy::InsertText);
@@ -273,6 +304,7 @@ mod tests {
 		let context = FocusedAppContext::new().with_app("com.todesktop.230313mzl4w4u92", "Cursor");
 		let plan = router.plan_for_context(&context);
 
+		assert_eq!(plan.profile_kind, PromptProfileKind::CodeEditor);
 		assert_eq!(plan.profile_id, "code-editor");
 		assert_eq!(plan.output_policy, VoiceOutputPolicy::PreviewBeforeInsert);
 	}
@@ -283,6 +315,7 @@ mod tests {
 		let context = FocusedAppContext::new().with_app("com.apple.Terminal", "Terminal");
 		let plan = router.plan_for_context(&context);
 
+		assert_eq!(plan.profile_kind, PromptProfileKind::Terminal);
 		assert_eq!(plan.profile_id, "terminal");
 		assert_eq!(plan.tier, VoiceInteractionTier::VoiceIntent);
 		assert_eq!(plan.output_policy, VoiceOutputPolicy::ConfirmBeforeAction);
@@ -297,6 +330,7 @@ mod tests {
 			.with_url_domain("linear.app");
 		let plan = router.plan_for_context(&context);
 
+		assert_eq!(plan.profile_kind, PromptProfileKind::WorkTracker);
 		assert_eq!(plan.profile_id, "work-tracker");
 		assert_eq!(plan.reasoning_effort, VoiceReasoningEffort::Medium);
 	}

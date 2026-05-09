@@ -19,8 +19,8 @@ pub use self::{
 	},
 	config::Config,
 	contextual::{
-		ContextualVoiceRouter, FocusedAppContext, PromptProfile, VoiceInteractionTier,
-		VoiceOutputPolicy, VoiceReasoningEffort, VoiceSessionPlan,
+		ContextualVoiceRouter, FocusedAppContext, PromptProfile, PromptProfileKind,
+		VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort, VoiceSessionPlan,
 	},
 	inference::{
 		InferenceEvent, RewriteResult, RewriteState, rewrite_only, start_realtime_session,
