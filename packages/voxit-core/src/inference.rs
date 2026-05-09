@@ -6,6 +6,7 @@ use std::sync::mpsc::{Receiver, Sender};
 #[cfg(target_os = "macos")]
 use crate::providers::{self, InferenceProvider, RewriteRequest, TranscriptionRequest};
 use crate::{
+	ContextualVoiceRouter, FocusedAppContext, VoiceSessionPlan,
 	providers::chatgpt::ChatGptProvider,
 	realtime::{RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig},
 };
@@ -31,6 +32,22 @@ pub struct RewriteResult {
 	pub state: RewriteState,
 	/// Optional reason for skipped or rejected rewrite.
 	pub reason: Option<String>,
+}
+
+/// Settings applied to a contextual rewrite pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteSettings {
+	/// Preserve numeric, date, and currency tokens.
+	pub guard_protected_tokens: bool,
+	/// Maximum accepted rewritten output length.
+	pub max_output_chars: u32,
+	/// Style preset supplied to prompt construction.
+	pub style: String,
+}
+impl Default for RewriteSettings {
+	fn default() -> Self {
+		Self { guard_protected_tokens: true, max_output_chars: 8_000, style: "clean".to_string() }
+	}
 }
 
 /// Background event sent to the UI thread.
@@ -103,6 +120,19 @@ pub fn transcribe_only(_wav: &[u8], _model: &str) -> Result<(String, u64), Strin
 /// Rewrites transcript text with protected-token guard checks.
 #[cfg(target_os = "macos")]
 pub fn rewrite_only(text: &str, model: &str) -> Result<(RewriteResult, u64), String> {
+	let plan = ContextualVoiceRouter.plan_for_context(&FocusedAppContext::new());
+
+	rewrite_only_with_plan(text, model, &plan, &RewriteSettings::default())
+}
+
+/// Rewrites transcript text with the selected contextual voice plan.
+#[cfg(target_os = "macos")]
+pub fn rewrite_only_with_plan(
+	text: &str,
+	model: &str,
+	plan: &VoiceSessionPlan,
+	settings: &RewriteSettings,
+) -> Result<(RewriteResult, u64), String> {
 	if text.trim().is_empty() {
 		return Ok((
 			RewriteResult {
@@ -115,7 +145,7 @@ pub fn rewrite_only(text: &str, model: &str) -> Result<(RewriteResult, u64), Str
 	}
 
 	let started = Instant::now();
-	let result = rewrite_with_guard(text, model)?;
+	let result = rewrite_with_guard(text, model, plan, settings)?;
 
 	Ok((result, started.elapsed().as_millis() as u64))
 }
@@ -126,18 +156,54 @@ pub fn rewrite_only(_text: &str, _model: &str) -> Result<(RewriteResult, u64), S
 	Err("inference pipeline is only enabled on macOS builds.".to_string())
 }
 
+/// Inference pipeline is unavailable on non-macOS placeholder builds.
+#[cfg(not(target_os = "macos"))]
+pub fn rewrite_only_with_plan(
+	_text: &str,
+	_model: &str,
+	_plan: &VoiceSessionPlan,
+	_settings: &RewriteSettings,
+) -> Result<(RewriteResult, u64), String> {
+	Err("inference pipeline is only enabled on macOS builds.".to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn default_provider() -> Result<ChatGptProvider, String> {
 	providers::chatgpt_oauth_provider()
 }
 
 #[cfg(target_os = "macos")]
-fn rewrite_with_guard(text: &str, model: &str) -> Result<RewriteResult, String> {
+fn rewrite_with_guard(
+	text: &str,
+	model: &str,
+	plan: &VoiceSessionPlan,
+	settings: &RewriteSettings,
+) -> Result<RewriteResult, String> {
 	let provider = default_provider()?;
-	let rewritten = provider.rewrite(RewriteRequest { text, model })?;
+	let instructions = plan.rewrite_instructions(&settings.style, settings.max_output_chars);
+	let rewritten =
+		provider.rewrite(RewriteRequest { text, model, instructions: &instructions })?;
+
+	if rewritten.chars().count() > settings.max_output_chars as usize {
+		return Ok(RewriteResult {
+			rewritten_transcript: None,
+			state: RewriteState::Rejected,
+			reason: Some(format!(
+				"rewrite exceeded max output length (limit={} chars). Using ASR transcript for safety.",
+				settings.max_output_chars
+			)),
+		});
+	}
+	if !settings.guard_protected_tokens {
+		return Ok(RewriteResult {
+			rewritten_transcript: Some(rewritten),
+			state: RewriteState::Applied,
+			reason: None,
+		});
+	}
+
 	let baseline = protected_token_multiset(text);
 	let candidate = protected_token_multiset(&rewritten);
-
 	if baseline != candidate {
 		return Ok(RewriteResult {
 			rewritten_transcript: None,

@@ -133,6 +133,8 @@ pub struct PromptProfile {
 	pub id: String,
 	/// Human-readable profile title.
 	pub title: String,
+	/// Prompt direction applied to app-aware rewrite and future reasoning sessions.
+	pub prompt_directive: String,
 	/// User-facing interaction tier.
 	pub tier: VoiceInteractionTier,
 	/// Default reasoning effort for this profile.
@@ -146,11 +148,20 @@ impl PromptProfile {
 		kind: PromptProfileKind,
 		id: impl Into<String>,
 		title: impl Into<String>,
+		prompt_directive: impl Into<String>,
 		tier: VoiceInteractionTier,
 		reasoning_effort: VoiceReasoningEffort,
 		output_policy: VoiceOutputPolicy,
 	) -> Self {
-		Self { kind, id: id.into(), title: title.into(), tier, reasoning_effort, output_policy }
+		Self {
+			kind,
+			id: id.into(),
+			title: title.into(),
+			prompt_directive: prompt_directive.into(),
+			tier,
+			reasoning_effort,
+			output_policy,
+		}
 	}
 }
 
@@ -163,6 +174,8 @@ pub struct VoiceSessionPlan {
 	pub profile_id: String,
 	/// Selected profile display title.
 	pub profile_title: String,
+	/// Prompt direction selected for this session.
+	pub prompt_directive: String,
 	/// Selected interaction tier.
 	pub tier: VoiceInteractionTier,
 	/// Selected reasoning effort.
@@ -176,10 +189,33 @@ impl VoiceSessionPlan {
 			profile_kind: profile.kind,
 			profile_id: profile.id,
 			profile_title: profile.title,
+			prompt_directive: profile.prompt_directive,
 			tier: profile.tier,
 			reasoning_effort: profile.reasoning_effort,
 			output_policy: profile.output_policy,
 		}
+	}
+
+	/// Build provider instructions for a contextual rewrite pass.
+	pub fn rewrite_instructions(&self, style: &str, max_output_chars: u32) -> String {
+		let max_output_chars = max_output_chars.max(1);
+
+		format!(
+			"You are Voxit, a contextual voice input layer. Rewrite the transcript for the destination app, not as generic ASR cleanup.\n\
+			Active profile: {profile_title} ({profile_id}).\n\
+			Profile direction: {prompt_directive}\n\
+			Interaction tier: {tier}.\n\
+			Reasoning effort target: {reasoning_effort}.\n\
+			Output policy: {output_policy}.\n\
+			Style preset: {style}.\n\
+			Constraints: preserve meaning, numbers, dates, money amounts, names, identifiers, and file paths unless the user explicitly said to change them. Keep the answer under {max_output_chars} characters. Return only the final text to insert or preview.",
+			profile_title = self.profile_title,
+			profile_id = self.profile_id,
+			prompt_directive = self.prompt_directive,
+			tier = interaction_tier_label(self.tier),
+			reasoning_effort = reasoning_effort_label(self.reasoning_effort),
+			output_policy = output_policy_label(self.output_policy),
+		)
 	}
 }
 
@@ -237,6 +273,7 @@ fn default_dictation_profile() -> PromptProfile {
 		PromptProfileKind::FastDictation,
 		"fast-dictation",
 		"Fast Dictation",
+		"Clean punctuation and readability with the lowest possible latency. Do not expand terse speech into a different structure.",
 		VoiceInteractionTier::FastDictation,
 		VoiceReasoningEffort::Minimal,
 		VoiceOutputPolicy::InsertText,
@@ -248,6 +285,7 @@ fn messaging_profile() -> PromptProfile {
 		PromptProfileKind::Messaging,
 		"messaging",
 		"Messaging",
+		"Shape the transcript as a concise conversational message for chat. Prefer natural short paragraphs and avoid email-like signoffs.",
 		VoiceInteractionTier::ContextRewrite,
 		VoiceReasoningEffort::Low,
 		VoiceOutputPolicy::InsertText,
@@ -259,6 +297,7 @@ fn mail_profile() -> PromptProfile {
 		PromptProfileKind::Mail,
 		"mail",
 		"Mail",
+		"Shape the transcript as complete but restrained email prose. Preserve intent while adding only necessary greeting, punctuation, and paragraph structure.",
 		VoiceInteractionTier::ContextRewrite,
 		VoiceReasoningEffort::Low,
 		VoiceOutputPolicy::PreviewBeforeInsert,
@@ -270,6 +309,7 @@ fn code_editor_profile() -> PromptProfile {
 		PromptProfileKind::CodeEditor,
 		"code-editor",
 		"Code Editor",
+		"Shape the transcript for code-editing work. Preserve symbols, identifiers, filenames, APIs, and quoted code-like phrases exactly when possible.",
 		VoiceInteractionTier::ContextRewrite,
 		VoiceReasoningEffort::Low,
 		VoiceOutputPolicy::PreviewBeforeInsert,
@@ -281,6 +321,7 @@ fn terminal_profile() -> PromptProfile {
 		PromptProfileKind::Terminal,
 		"terminal",
 		"Terminal",
+		"Produce a terminal-focused command proposal or explanation. Never imply that a command has run; keep risky shell actions clearly previewable.",
 		VoiceInteractionTier::VoiceIntent,
 		VoiceReasoningEffort::Medium,
 		VoiceOutputPolicy::ConfirmBeforeAction,
@@ -292,10 +333,36 @@ fn work_tracker_profile() -> PromptProfile {
 		PromptProfileKind::WorkTracker,
 		"work-tracker",
 		"Work Tracker",
+		"Shape the transcript as a practical issue, pull request, review, status, or acceptance-criteria note. Prefer concrete bullets when they improve scanability.",
 		VoiceInteractionTier::ContextRewrite,
 		VoiceReasoningEffort::Medium,
 		VoiceOutputPolicy::PreviewBeforeInsert,
 	)
+}
+
+fn interaction_tier_label(tier: VoiceInteractionTier) -> &'static str {
+	match tier {
+		VoiceInteractionTier::FastDictation => "fast_dictation",
+		VoiceInteractionTier::ContextRewrite => "context_rewrite",
+		VoiceInteractionTier::VoiceIntent => "voice_intent",
+	}
+}
+
+fn reasoning_effort_label(effort: VoiceReasoningEffort) -> &'static str {
+	match effort {
+		VoiceReasoningEffort::Minimal => "minimal",
+		VoiceReasoningEffort::Low => "low",
+		VoiceReasoningEffort::Medium => "medium",
+		VoiceReasoningEffort::High => "high",
+	}
+}
+
+fn output_policy_label(policy: VoiceOutputPolicy) -> &'static str {
+	match policy {
+		VoiceOutputPolicy::InsertText => "insert_text",
+		VoiceOutputPolicy::PreviewBeforeInsert => "preview_before_insert",
+		VoiceOutputPolicy::ConfirmBeforeAction => "confirm_before_action",
+	}
 }
 
 #[cfg(test)]
@@ -364,5 +431,18 @@ mod tests {
 		assert_eq!(plan.profile_kind, PromptProfileKind::WorkTracker);
 		assert_eq!(plan.profile_id, "work-tracker");
 		assert_eq!(plan.reasoning_effort, VoiceReasoningEffort::Medium);
+	}
+
+	#[test]
+	fn rewrite_instructions_include_profile_policy_and_limits() {
+		let router = ContextualVoiceRouter;
+		let context = FocusedAppContext::new().with_app("com.apple.Terminal", "Terminal");
+		let plan = router.plan_for_context(&context);
+		let instructions = plan.rewrite_instructions("concise", 1200);
+
+		assert!(instructions.contains("Terminal"));
+		assert!(instructions.contains("confirm_before_action"));
+		assert!(instructions.contains("concise"));
+		assert!(instructions.contains("1200"));
 	}
 }

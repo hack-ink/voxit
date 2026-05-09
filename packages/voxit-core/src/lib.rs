@@ -23,8 +23,8 @@ pub use self::{
 		VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort, VoiceSessionPlan,
 	},
 	inference::{
-		InferenceEvent, RewriteResult, RewriteState, rewrite_only, start_realtime_session,
-		transcribe_only,
+		InferenceEvent, RewriteResult, RewriteSettings, RewriteState, rewrite_only,
+		rewrite_only_with_plan, start_realtime_session, transcribe_only,
 	},
 	realtime::{
 		REALTIME_ENDPOINT, RealtimeError, RealtimeEvent, RealtimeSession, RealtimeSessionConfig,

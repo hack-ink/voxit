@@ -56,11 +56,10 @@ impl ChatGptProvider {
 	}
 
 	fn rewrite_chatgpt(&self, request: RewriteRequest<'_>) -> Result<String, String> {
-		let prompt = "Rewrite the transcript for punctuation and readability. Keep the meaning, numbers, and names intact.";
 		let body = serde_json::json!({
 			"model": request.model,
 			"input": format!("Transcript: {}", request.text),
-			"instructions": prompt,
+			"instructions": request.instructions,
 			"temperature": 0.2,
 		});
 		let body = self.post_json(OPENAI_RESPONSES_ENDPOINT, body)?;
