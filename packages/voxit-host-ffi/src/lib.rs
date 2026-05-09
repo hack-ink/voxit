@@ -9,7 +9,7 @@ use std::{
 	ptr::{self, NonNull},
 };
 
-use voxit_audio::Recorder;
+#[cfg(target_os = "macos")] use voxit_audio::Recorder;
 use voxit_core::{
 	self, Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
 	RewriteSettings, VoiceSessionPlan,
@@ -18,7 +18,7 @@ use voxit_core::{
 	},
 	ui_model::{AuthMethod, AuthSurfaceState, DictationSurfaceState, HotkeySurfaceMode},
 };
-use voxit_macos::TargetApp;
+#[cfg(target_os = "macos")] use voxit_macos::TargetApp;
 
 /// ABI version exported by the thin C host bridge.
 pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 4;
