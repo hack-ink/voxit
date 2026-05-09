@@ -40,18 +40,13 @@ jobs:
           rustflags: ''
           components: rustfmt, clippy
 
-      - name: Install nightly rustfmt
-        run: rustup toolchain install nightly --component rustfmt
-
       - name: Install cargo-make
         uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
         with:
           tool: cargo-make
 
-      - name: Install nextest
-        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
-        with:
-          tool: nextest
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --component rustfmt
 
       - name: Run Rust format checks
         run: cargo make fmt-rust-check
@@ -66,6 +61,11 @@ jobs:
 
       - name: Run Rust clippy
         run: cargo make lint-rust
+
+      - name: Install nextest
+        uses: taiki-e/install-action@3fa6878dc4ae603f73960271565a082bf196ab96 # v2.77.2
+        with:
+          tool: nextest
 
       - name: Run Rust tests
         run: cargo make test-rust

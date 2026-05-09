@@ -5,16 +5,17 @@
 # | ----------------------- | --------- | --- |
 # | lint                    | composite |     |
 # | lint-fix                | composite |     |
-# | lint-rust               | command   |     |
 # | lint-fix-rust           | extend    |     |
-# | lint-swift              | composite |     |
 # | lint-fix-swift          | composite |     |
-# | lint-vstyle             | composite |     |
-# | lint-vstyle-rust        | command   |     |
-# | lint-vstyle-swift       | command   |     |
 # | lint-fix-vstyle         | composite |     |
 # | lint-fix-vstyle-rust    | command   |     |
 # | lint-fix-vstyle-swift   | command   |     |
+# | lint-rust               | command   |     |
+# | lint-swift              | composite |     |
+# | lint-swift-format       | command   |     |
+# | lint-vstyle             | composite |     |
+# | lint-vstyle-rust        | command   |     |
+# | lint-vstyle-swift       | command   |     |
 
 [tasks.lint]
 workspace = false
@@ -30,6 +31,74 @@ dependencies = [
 	"lint-fix-rust",
 	"lint-fix-swift",
 	"lint-fix-vstyle",
+]
+
+[tasks.lint-fix-rust]
+extend = "lint-rust"
+args = [
+	"clippy",
+	"--fix",
+	"--allow-dirty",
+	"--all-features",
+	"--all-targets",
+	"--workspace",
+	"--",
+	"-D",
+	"clippy::all",
+	"-D",
+	"clippy::too_many_lines",
+	"-D",
+	"clippy::unwrap_used",
+	"-D",
+	"clippy::use_self",
+	"-D",
+	"clippy::wildcard_imports",
+	"-D",
+	"missing-docs",
+	"-D",
+	"unused-crate-dependencies",
+	"-D",
+	"warnings",
+]
+
+[tasks.lint-fix-swift]
+workspace = false
+dependencies = [
+	"fmt-swift",
+	"build-swift-strict",
+]
+
+[tasks.lint-fix-vstyle]
+workspace = false
+dependencies = [
+	"lint-fix-vstyle-rust",
+	"lint-fix-vstyle-swift",
+]
+
+[tasks.lint-fix-vstyle-rust]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"tune",
+	"--language",
+	"rust",
+	"--workspace",
+	"--all-features",
+	"--strict",
+]
+
+[tasks.lint-fix-vstyle-swift]
+workspace = false
+command = "cargo"
+args = [
+	"vstyle",
+	"tune",
+	"--language",
+	"swift",
+	"--workspace",
+	"--all-features",
+	"--strict",
 ]
 
 [tasks.lint-rust]
@@ -66,13 +135,6 @@ dependencies = [
 	"build-swift-strict",
 ]
 
-[tasks.lint-fix-swift]
-workspace = false
-dependencies = [
-	"fmt-swift",
-	"build-swift-strict",
-]
-
 [tasks.lint-swift-format]
 workspace = false
 command = "swift"
@@ -83,34 +145,6 @@ args = [
 	"--strict",
 	"--parallel",
 	"native/macos-host/Sources",
-]
-
-[tasks.lint-fix-rust]
-extend = "lint-rust"
-args = [
-	"clippy",
-	"--fix",
-	"--allow-dirty",
-	"--all-features",
-	"--all-targets",
-	"--workspace",
-	"--",
-	"-D",
-	"clippy::all",
-	"-D",
-	"clippy::too_many_lines",
-	"-D",
-	"clippy::unwrap_used",
-	"-D",
-	"clippy::use_self",
-	"-D",
-	"clippy::wildcard_imports",
-	"-D",
-	"missing-docs",
-	"-D",
-	"unused-crate-dependencies",
-	"-D",
-	"warnings",
 ]
 
 [tasks.lint-vstyle]
@@ -144,86 +178,18 @@ args = [
 	"--all-features",
 ]
 
-[tasks.lint-fix-vstyle]
-workspace = false
-dependencies = [
-	"lint-fix-vstyle-rust",
-	"lint-fix-vstyle-swift",
-]
-
-[tasks.lint-fix-vstyle-rust]
-workspace = false
-command = "cargo"
-args = [
-	"vstyle",
-	"tune",
-	"--language",
-	"rust",
-	"--workspace",
-	"--all-features",
-	"--strict",
-]
-
-[tasks.lint-fix-vstyle-swift]
-workspace = false
-command = "cargo"
-args = [
-	"vstyle",
-	"tune",
-	"--language",
-	"swift",
-	"--workspace",
-	"--all-features",
-	"--strict",
-]
-
 
 # Test
 # | task                         | type      | cwd |
 # | ---------------------------- | --------- | --- |
+# | build-host-ffi-staticlib     | command   |     |
+# | build-swift-strict           | command   |     |
 # | test                         | composite | |
-# | test-rust                    | command   | |
-# | test-swift                   | composite | |
 # | test-host-ffi-header         | command   | |
 # | test-macos-native-host       | command   | |
 # | test-macos-native-host-stage | command   | |
-
-[tasks.test]
-workspace = false
-dependencies = [
-	"test-rust",
-	"test-swift",
-]
-
-[tasks.test-swift]
-workspace = false
-dependencies = [
-	"test-host-ffi-header",
-	"test-macos-native-host",
-	"test-macos-native-host-stage",
-]
-
-[tasks.test-rust]
-workspace = false
-command = "cargo"
-args = [
-	"nextest",
-	"run",
-	"--workspace",
-	"--all-targets",
-	"--all-features",
-]
-
-[tasks.test-host-ffi-header]
-workspace = false
-command = "clang"
-args = [
-	"-std=c11",
-	"-fsyntax-only",
-	"-I",
-	"packages/voxit-host-ffi/include",
-	"packages/voxit-host-ffi/tests/header_smoke.c",
-]
+# | test-rust                    | command   | |
+# | test-swift                   | composite | |
 
 [tasks.build-host-ffi-staticlib]
 workspace = false
@@ -243,6 +209,24 @@ swift build --package-path native/macos-host \
 	-Xswiftc -warnings-as-errors \
 	-Xswiftc -strict-concurrency=complete
 '''
+
+[tasks.test]
+workspace = false
+dependencies = [
+	"test-rust",
+	"test-swift",
+]
+
+[tasks.test-host-ffi-header]
+workspace = false
+command = "clang"
+args = [
+	"-std=c11",
+	"-fsyntax-only",
+	"-I",
+	"packages/voxit-host-ffi/include",
+	"packages/voxit-host-ffi/tests/header_smoke.c",
+]
 
 [tasks.test-macos-native-host]
 workspace = false
@@ -274,6 +258,25 @@ plutil -extract CFBundleIdentifier raw "$APP_PATH/Contents/Info.plist" | grep -q
 plutil -extract CFBundleIconFile raw "$APP_PATH/Contents/Info.plist" | grep -qx 'AppIcon'
 plutil -extract LSUIElement raw "$APP_PATH/Contents/Info.plist" | grep -qx 'true'
 '''
+
+[tasks.test-rust]
+workspace = false
+command = "cargo"
+args = [
+	"nextest",
+	"run",
+	"--workspace",
+	"--all-targets",
+	"--all-features",
+]
+
+[tasks.test-swift]
+workspace = false
+dependencies = [
+	"test-host-ffi-header",
+	"test-macos-native-host",
+	"test-macos-native-host-stage",
+]
 
 
 # Format
@@ -351,7 +354,7 @@ args = [
 [tasks.checks]
 workspace = false
 dependencies = [
+	"fmt-check",
 	"lint",
 	"test",
-	"fmt-check",
 ]
