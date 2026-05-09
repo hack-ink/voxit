@@ -452,7 +452,7 @@ mod tests {
 		let router = ContextualVoiceRouter;
 		let context = FocusedAppContext::new().with_app("com.apple.Terminal", "Terminal");
 		let plan = router.plan_for_context(&context);
-		let instructions = plan.rewrite_instructions("concise", 1200);
+		let instructions = plan.rewrite_instructions("concise", 1_200);
 
 		assert!(instructions.contains("Terminal"));
 		assert!(instructions.contains("confirm_before_action"));

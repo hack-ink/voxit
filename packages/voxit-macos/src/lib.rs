@@ -327,6 +327,7 @@ pub fn paste_text(target: Option<&TargetApp>, text: &str, lock_target: bool) -> 
 	}
 
 	copy_to_clipboard(text)?;
+
 	dispatch_command_v()
 }
 
@@ -441,6 +442,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 	};
 
 	stdin.write_all(text.as_bytes()).map_err(|err| format!("write pbcopy failed: {err}"))?;
+
 	let status = child.wait().map_err(|err| format!("wait pbcopy failed: {err}"))?;
 
 	if status.success() { Ok(()) } else { Err(format!("pbcopy failed with status {status}")) }

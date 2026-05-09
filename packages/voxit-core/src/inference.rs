@@ -188,10 +188,12 @@ fn rewrite_with_guard(
 ) -> Result<RewriteResult, String> {
 	let provider = default_provider()?;
 	let mut instructions = plan.rewrite_instructions(&settings.style, settings.max_output_chars);
+
 	if !settings.glossary_terms.trim().is_empty() {
 		instructions.push_str("\nGlossary terms to preserve or prefer:\n");
 		instructions.push_str(settings.glossary_terms.trim());
 	}
+
 	let rewritten =
 		provider.rewrite(RewriteRequest { text, model, instructions: &instructions })?;
 
@@ -215,6 +217,7 @@ fn rewrite_with_guard(
 
 	let baseline = protected_token_multiset(text);
 	let candidate = protected_token_multiset(&rewritten);
+
 	if baseline != candidate {
 		return Ok(RewriteResult {
 			rewritten_transcript: None,
