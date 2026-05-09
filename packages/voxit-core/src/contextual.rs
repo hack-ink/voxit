@@ -223,6 +223,20 @@ impl VoiceSessionPlan {
 #[derive(Clone, Debug, Default)]
 pub struct ContextualVoiceRouter;
 impl ContextualVoiceRouter {
+	/// Plan a contextual voice session from an explicit built-in profile.
+	pub fn plan_for_profile_kind(&self, kind: PromptProfileKind) -> VoiceSessionPlan {
+		let profile = match kind {
+			PromptProfileKind::FastDictation => default_dictation_profile(),
+			PromptProfileKind::Messaging => messaging_profile(),
+			PromptProfileKind::Mail => mail_profile(),
+			PromptProfileKind::CodeEditor => code_editor_profile(),
+			PromptProfileKind::Terminal => terminal_profile(),
+			PromptProfileKind::WorkTracker => work_tracker_profile(),
+		};
+
+		VoiceSessionPlan::from_profile(profile)
+	}
+
 	/// Plan a contextual voice session from focused app context.
 	pub fn plan_for_context(&self, context: &FocusedAppContext) -> VoiceSessionPlan {
 		let profile = if context_matches_any(context, &["com.tinyspeck.slackmacgap", "discord"]) {
@@ -444,5 +458,15 @@ mod tests {
 		assert!(instructions.contains("confirm_before_action"));
 		assert!(instructions.contains("concise"));
 		assert!(instructions.contains("1200"));
+	}
+
+	#[test]
+	fn explicit_profile_kind_builds_matching_plan() {
+		let router = ContextualVoiceRouter;
+		let plan = router.plan_for_profile_kind(PromptProfileKind::Mail);
+
+		assert_eq!(plan.profile_kind, PromptProfileKind::Mail);
+		assert_eq!(plan.profile_id, "mail");
+		assert_eq!(plan.output_policy, VoiceOutputPolicy::PreviewBeforeInsert);
 	}
 }

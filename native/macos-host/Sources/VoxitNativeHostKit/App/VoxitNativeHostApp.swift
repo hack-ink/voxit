@@ -18,6 +18,10 @@ public struct VoxitNativeHostApp: App {
           configureSettingsSync()
           await store.reload()
           await store.savePreferences(settingsStore.settings)
+          await store.setGlossary(UserDefaults.standard.string(forKey: "glossaryTerms") ?? "")
+          let profileOverrideRaw =
+            UserDefaults.standard.string(forKey: "profileOverride") ?? ProfileOverride.auto.rawValue
+          await store.setProfileOverride(ProfileOverride(rawValue: profileOverrideRaw)?.profileKind)
         }
     }
     .commands {

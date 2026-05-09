@@ -9,6 +9,8 @@ struct DetailView: View {
   var startDictation: () -> Void
   var stopDictation: () -> Void
   var pasteFinalOutput: () -> Void
+  var setProfileOverride: (PromptProfileKind?) -> Void
+  var setGlossary: (String) -> Void
 
   var body: some View {
     ScrollView {
@@ -32,11 +34,11 @@ struct DetailView: View {
         case .appRules:
           AppRulesDetail()
         case .profiles:
-          ProfilesDetail(snapshot: snapshot)
+          ProfilesDetail(snapshot: snapshot, setProfileOverride: setProfileOverride)
         case .glossary:
-          GlossaryDetail()
+          GlossaryDetail(setGlossary: setGlossary)
         case .promptLab:
-          PromptLabDetail()
+          PromptLabDetail(snapshot: snapshot)
         }
       }
       .padding(24)
@@ -166,8 +168,17 @@ private struct AppRulesDetail: View {
 
 private struct ProfilesDetail: View {
   var snapshot: HostSnapshot?
+  var setProfileOverride: (PromptProfileKind?) -> Void
+  @AppStorage("profileOverride") private var profileOverride = ProfileOverride.auto.rawValue
 
   var body: some View {
+    Picker("Profile", selection: profileOverrideBinding) {
+      ForEach(ProfileOverride.allCases) { profile in
+        Text(profile.title).tag(profile.rawValue)
+      }
+    }
+    .pickerStyle(.menu)
+
     LabeledContentGrid {
       StatusCard(
         title: "Current",
@@ -179,26 +190,132 @@ private struct ProfilesDetail: View {
         value: snapshot?.reasoningEffort.label ?? "Loading",
         systemImage: "brain"
       )
-      StatusCard(title: "Context Rewrite", value: "Low", systemImage: "wand.and.stars")
-      StatusCard(title: "Voice Intent", value: "Medium", systemImage: "arrow.triangle.branch")
+      StatusCard(
+        title: "Directive",
+        value: snapshot?.promptDirective ?? "Profile Default",
+        systemImage: "wand.and.stars"
+      )
+      StatusCard(
+        title: "Output", value: snapshot?.outputPolicy.label ?? "Loading",
+        systemImage: "arrow.triangle.branch")
     }
+  }
+
+  private var profileOverrideBinding: Binding<String> {
+    Binding(
+      get: { profileOverride },
+      set: { value in
+        profileOverride = value
+        setProfileOverride(ProfileOverride(rawValue: value)?.profileKind)
+      }
+    )
   }
 }
 
 private struct GlossaryDetail: View {
+  var setGlossary: (String) -> Void
+  @AppStorage("glossaryTerms") private var glossaryTerms = ""
+
   var body: some View {
+    TextEditor(text: glossaryBinding)
+      .font(.body)
+      .frame(minHeight: 140)
+      .padding(10)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+
     LabeledContentGrid {
-      StatusCard(title: "Custom Terms", value: "None", systemImage: "text.book.closed")
+      StatusCard(title: "Custom Terms", value: glossarySummary, systemImage: "text.book.closed")
       StatusCard(title: "Entity Guard", value: "Numbers, dates, money", systemImage: "number")
     }
+  }
+
+  private var glossaryBinding: Binding<String> {
+    Binding(
+      get: { glossaryTerms },
+      set: { value in
+        glossaryTerms = value
+        setGlossary(value)
+      }
+    )
+  }
+
+  private var glossarySummary: String {
+    let count = glossaryTerms.split(whereSeparator: \.isNewline).filter { !$0.isEmpty }.count
+    return count == 0 ? "None" : "\(count) Terms"
   }
 }
 
 private struct PromptLabDetail: View {
+  var snapshot: HostSnapshot?
+  @AppStorage("promptLabSample") private var sample = "Summarize what I just said for this app."
+
   var body: some View {
+    TextEditor(text: $sample)
+      .font(.body)
+      .frame(minHeight: 96)
+      .padding(10)
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+
     LabeledContentGrid {
-      StatusCard(title: "Comparison", value: "No Runs", systemImage: "rectangle.split.2x1")
-      StatusCard(title: "Reasoning", value: "Profile Default", systemImage: "brain")
+      StatusCard(
+        title: "Profile", value: snapshot?.promptProfileKind.label ?? "Loading",
+        systemImage: "rectangle.split.2x1")
+      StatusCard(
+        title: "Reasoning", value: snapshot?.reasoningEffort.label ?? "Profile Default",
+        systemImage: "brain")
+      StatusCard(
+        title: "Directive", value: snapshot?.promptDirective ?? "Profile Default",
+        systemImage: "text.alignleft")
+    }
+  }
+}
+
+enum ProfileOverride: String, CaseIterable, Identifiable {
+  case auto
+  case fastDictation
+  case messaging
+  case mail
+  case codeEditor
+  case terminal
+  case workTracker
+
+  var id: Self { self }
+
+  var title: String {
+    switch self {
+    case .auto:
+      return "Auto"
+    case .fastDictation:
+      return "Fast Dictation"
+    case .messaging:
+      return "Messaging"
+    case .mail:
+      return "Mail"
+    case .codeEditor:
+      return "Code Editor"
+    case .terminal:
+      return "Terminal"
+    case .workTracker:
+      return "Work Tracker"
+    }
+  }
+
+  var profileKind: PromptProfileKind? {
+    switch self {
+    case .auto:
+      return nil
+    case .fastDictation:
+      return .fastDictation
+    case .messaging:
+      return .messaging
+    case .mail:
+      return .mail
+    case .codeEditor:
+      return .codeEditor
+    case .terminal:
+      return .terminal
+    case .workTracker:
+      return .workTracker
     }
   }
 }

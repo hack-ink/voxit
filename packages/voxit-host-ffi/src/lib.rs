@@ -27,7 +27,9 @@ pub struct VoxitHostSessionHandle {
 	config: Config,
 	snapshot: NativeHostSnapshot,
 	focused_context: FocusedAppContext,
+	profile_override: Option<PromptProfileKind>,
 	voice_plan: VoiceSessionPlan,
+	glossary_terms: String,
 	last_raw_transcript: String,
 	last_final_output: String,
 	last_error: String,
@@ -304,7 +306,9 @@ pub extern "C" fn voxit_host_session_create(
 		config,
 		snapshot,
 		focused_context,
+		profile_override: None,
 		voice_plan,
+		glossary_terms: String::new(),
 		last_raw_transcript: String::new(),
 		last_final_output: String::new(),
 		last_error: String::new(),
@@ -378,7 +382,7 @@ pub unsafe extern "C" fn voxit_host_session_refresh_focused_context(
 	let handle = unsafe { handle.as_mut() };
 
 	refresh_focused_context(handle);
-	handle.voice_plan = ContextualVoiceRouter.plan_for_context(&handle.focused_context);
+	update_voice_plan(handle);
 
 	VoxitStatus::Ok
 }
@@ -463,6 +467,77 @@ pub unsafe extern "C" fn voxit_host_session_save_preferences(
 	save_preferences(handle, preferences, hotkey_chord)
 }
 
+/// Sets a manual prompt-profile override for the current host session.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_set_profile_override(
+	handle: *mut VoxitHostSessionHandle,
+	profile_kind: VoxitPromptProfileKind,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	handle.profile_override = Some(decode_prompt_profile_kind(profile_kind));
+	update_voice_plan(handle);
+
+	VoxitStatus::Ok
+}
+
+/// Clears any manual prompt-profile override for the current host session.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_clear_profile_override(
+	handle: *mut VoxitHostSessionHandle,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+
+	handle.profile_override = None;
+	update_voice_plan(handle);
+
+	VoxitStatus::Ok
+}
+
+/// Sets newline-separated glossary terms for contextual rewrite prompts.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`].
+/// `glossary_terms` must point to a null-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_set_glossary(
+	handle: *mut VoxitHostSessionHandle,
+	glossary_terms: *const c_char,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let Some(glossary_terms) = NonNull::new(glossary_terms.cast_mut()) else {
+		return VoxitStatus::InvalidInput;
+	};
+	let handle = unsafe { handle.as_mut() };
+	let glossary_terms = unsafe { CStr::from_ptr(glossary_terms.as_ptr()) };
+	let Ok(glossary_terms) = glossary_terms.to_str() else {
+		set_error(handle, "glossary terms are not valid UTF-8");
+
+		return VoxitStatus::Ok;
+	};
+
+	handle.glossary_terms = glossary_terms.to_string();
+
+	VoxitStatus::Ok
+}
+
 /// Copies a Rust-owned string field into caller-owned memory.
 ///
 /// # Safety
@@ -494,7 +569,7 @@ pub unsafe extern "C" fn voxit_host_session_copy_string(
 fn start_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 	clear_run_output(handle);
 	refresh_focused_context(handle);
-	handle.voice_plan = ContextualVoiceRouter.plan_for_context(&handle.focused_context);
+	update_voice_plan(handle);
 
 	#[cfg(target_os = "macos")]
 	{
@@ -572,7 +647,7 @@ fn stop_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 
 		if handle.config.rewrite.enabled && handle.config.rewrite.auto {
 			handle.snapshot.dictation_state = DictationSurfaceState::Rewriting;
-			let settings = rewrite_settings(&handle.config);
+			let settings = rewrite_settings(handle);
 			match rewrite_only_with_plan(
 				&handle.last_raw_transcript,
 				&handle.config.openai.rewrite_model,
@@ -684,12 +759,23 @@ fn set_error(handle: &mut VoxitHostSessionHandle, message: impl Into<String>) {
 	handle.last_error = message.into();
 }
 
-fn rewrite_settings(config: &Config) -> RewriteSettings {
+fn rewrite_settings(handle: &VoxitHostSessionHandle) -> RewriteSettings {
 	RewriteSettings {
-		guard_protected_tokens: config.rewrite.guard_numbers,
-		max_output_chars: config.rewrite.max_output_chars,
-		style: config.rewrite.style.clone(),
+		guard_protected_tokens: handle.config.rewrite.guard_numbers,
+		max_output_chars: handle.config.rewrite.max_output_chars,
+		style: handle.config.rewrite.style.clone(),
+		glossary_terms: handle.glossary_terms.clone(),
 	}
+}
+
+fn update_voice_plan(handle: &mut VoxitHostSessionHandle) {
+	let router = ContextualVoiceRouter;
+
+	handle.voice_plan = if let Some(kind) = handle.profile_override {
+		router.plan_for_profile_kind(kind)
+	} else {
+		router.plan_for_context(&handle.focused_context)
+	};
 }
 
 fn encode_snapshot(
@@ -783,6 +869,17 @@ fn encode_prompt_profile_kind(kind: PromptProfileKind) -> VoxitPromptProfileKind
 		PromptProfileKind::CodeEditor => VoxitPromptProfileKind::CodeEditor,
 		PromptProfileKind::Terminal => VoxitPromptProfileKind::Terminal,
 		PromptProfileKind::WorkTracker => VoxitPromptProfileKind::WorkTracker,
+	}
+}
+
+fn decode_prompt_profile_kind(kind: VoxitPromptProfileKind) -> PromptProfileKind {
+	match kind {
+		VoxitPromptProfileKind::FastDictation => PromptProfileKind::FastDictation,
+		VoxitPromptProfileKind::Messaging => PromptProfileKind::Messaging,
+		VoxitPromptProfileKind::Mail => PromptProfileKind::Mail,
+		VoxitPromptProfileKind::CodeEditor => PromptProfileKind::CodeEditor,
+		VoxitPromptProfileKind::Terminal => PromptProfileKind::Terminal,
+		VoxitPromptProfileKind::WorkTracker => PromptProfileKind::WorkTracker,
 	}
 }
 

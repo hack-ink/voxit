@@ -43,10 +43,17 @@ pub struct RewriteSettings {
 	pub max_output_chars: u32,
 	/// Style preset supplied to prompt construction.
 	pub style: String,
+	/// Optional user glossary terms to preserve or prefer.
+	pub glossary_terms: String,
 }
 impl Default for RewriteSettings {
 	fn default() -> Self {
-		Self { guard_protected_tokens: true, max_output_chars: 8_000, style: "clean".to_string() }
+		Self {
+			guard_protected_tokens: true,
+			max_output_chars: 8_000,
+			style: "clean".to_string(),
+			glossary_terms: String::new(),
+		}
 	}
 }
 
@@ -180,7 +187,11 @@ fn rewrite_with_guard(
 	settings: &RewriteSettings,
 ) -> Result<RewriteResult, String> {
 	let provider = default_provider()?;
-	let instructions = plan.rewrite_instructions(&settings.style, settings.max_output_chars);
+	let mut instructions = plan.rewrite_instructions(&settings.style, settings.max_output_chars);
+	if !settings.glossary_terms.trim().is_empty() {
+		instructions.push_str("\nGlossary terms to preserve or prefer:\n");
+		instructions.push_str(settings.glossary_terms.trim());
+	}
 	let rewritten =
 		provider.rewrite(RewriteRequest { text, model, instructions: &instructions })?;
 

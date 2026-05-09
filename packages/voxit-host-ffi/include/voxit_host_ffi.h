@@ -132,6 +132,15 @@ enum VoxitStatus voxit_host_session_save_preferences(
 	struct VoxitHostPreferences preferences,
 	const char *hotkey_chord
 );
+enum VoxitStatus voxit_host_session_set_profile_override(
+	VoxitHostSessionHandle *handle,
+	enum VoxitPromptProfileKind profile_kind
+);
+enum VoxitStatus voxit_host_session_clear_profile_override(VoxitHostSessionHandle *handle);
+enum VoxitStatus voxit_host_session_set_glossary(
+	VoxitHostSessionHandle *handle,
+	const char *glossary_terms
+);
 enum VoxitStatus voxit_host_session_copy_snapshot(
 	VoxitHostSessionHandle *handle,
 	struct VoxitHostSnapshot *out

@@ -36,6 +36,16 @@ public struct ContentView: View {
           Task {
             await store.pasteFinalOutput()
           }
+        },
+        setProfileOverride: { profileKind in
+          Task {
+            await store.setProfileOverride(profileKind)
+          }
+        },
+        setGlossary: { glossaryTerms in
+          Task {
+            await store.setGlossary(glossaryTerms)
+          }
         }
       )
     }

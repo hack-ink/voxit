@@ -76,6 +76,30 @@ public final class HostStore: ObservableObject {
     }
   }
 
+  func setProfileOverride(_ profileKind: PromptProfileKind?) async {
+    do {
+      let session = try currentSession()
+      if let profileKind {
+        snapshot = try session.setProfileOverride(profileKind)
+      } else {
+        snapshot = try session.clearProfileOverride()
+      }
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
+  func setGlossary(_ glossaryTerms: String) async {
+    do {
+      let session = try currentSession()
+      snapshot = try session.setGlossary(glossaryTerms)
+      errorMessage = snapshot?.lastError
+    } catch {
+      errorMessage = String(describing: error)
+    }
+  }
+
   private func currentSession() throws -> VoxitHostSession {
     if let session {
       return session

@@ -277,6 +277,30 @@ public final class VoxitHostSession {
     return try currentSnapshot()
   }
 
+  public func setProfileOverride(_ profileKind: PromptProfileKind) throws -> HostSnapshot {
+    try requireOk(
+      voxit_host_session_set_profile_override(handle, encode(promptProfileKind: profileKind)),
+      context: "setting profile override"
+    )
+
+    return try currentSnapshot()
+  }
+
+  public func clearProfileOverride() throws -> HostSnapshot {
+    try requireOk(
+      voxit_host_session_clear_profile_override(handle), context: "clearing profile override")
+
+    return try currentSnapshot()
+  }
+
+  public func setGlossary(_ glossaryTerms: String) throws -> HostSnapshot {
+    try glossaryTerms.withCString { raw in
+      try requireOk(voxit_host_session_set_glossary(handle, raw), context: "setting glossary")
+    }
+
+    return try currentSnapshot()
+  }
+
   private func requireOk(_ status: VoxitStatus, context: String) throws {
     let code = voxit_status_code(status)
     if code != 0 {
@@ -401,6 +425,23 @@ public final class VoxitHostSession {
       return VOXIT_HOTKEY_MODE_TOGGLE
     case .hold:
       return VOXIT_HOTKEY_MODE_HOLD
+    }
+  }
+
+  private func encode(promptProfileKind: PromptProfileKind) -> VoxitPromptProfileKind {
+    switch promptProfileKind {
+    case .fastDictation:
+      return VOXIT_PROMPT_PROFILE_FAST_DICTATION
+    case .messaging:
+      return VOXIT_PROMPT_PROFILE_MESSAGING
+    case .mail:
+      return VOXIT_PROMPT_PROFILE_MAIL
+    case .codeEditor:
+      return VOXIT_PROMPT_PROFILE_CODE_EDITOR
+    case .terminal:
+      return VOXIT_PROMPT_PROFILE_TERMINAL
+    case .workTracker:
+      return VOXIT_PROMPT_PROFILE_WORK_TRACKER
     }
   }
 
