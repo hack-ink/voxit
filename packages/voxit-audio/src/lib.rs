@@ -1,13 +1,10 @@
 //! Audio capture primitives for Voxit.
 
+use std::sync::mpsc::Receiver;
+#[cfg(target_os = "macos")]
 use std::{
 	io::Cursor,
-	sync::{
-		Arc, Mutex,
-		atomic::AtomicU64,
-		mpsc,
-		mpsc::{Receiver, SyncSender},
-	},
+	sync::{Arc, Mutex, atomic::AtomicU64, mpsc, mpsc::SyncSender},
 	time::Instant,
 };
 
@@ -18,8 +15,8 @@ use coreaudio::audio_unit::{
 	macos_helpers,
 	render_callback::{Args, data::Interleaved},
 };
-use coreaudio::error::Error;
-use hound::{WavSpec, WavWriter};
+#[cfg(target_os = "macos")] use coreaudio::error::Error;
+#[cfg(target_os = "macos")] use hound::{WavSpec, WavWriter};
 #[cfg(target_os = "macos")]
 use objc2_audio_toolbox::{
 	kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
@@ -95,6 +92,7 @@ pub struct Recorder {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
+/// Stub recording handle for unsupported platforms.
 pub struct Recorder;
 #[cfg(target_os = "macos")]
 impl Recorder {
@@ -234,6 +232,7 @@ impl Recorder {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
+/// Stub recording payload for unsupported platforms.
 pub struct Recording;
 
 #[cfg(not(target_os = "macos"))]
