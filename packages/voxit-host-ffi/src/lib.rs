@@ -4,17 +4,19 @@
 //! This gives the Swift host a stable Rust-owned model without moving audio, auth, or
 //! inference orchestration across FFI before those boundaries are ready.
 
+#[cfg(target_os = "macos")] use std::sync::mpsc;
 use std::{
 	ffi::{CStr, c_char},
 	ptr::{self, NonNull},
-	sync::mpsc::{self, Receiver, TryRecvError},
+	sync::mpsc::{Receiver, TryRecvError},
 };
 
 #[cfg(target_os = "macos")] use voxit_audio::Recorder;
+#[cfg(target_os = "macos")] use voxit_core::RealtimeSessionConfig;
 #[cfg(target_os = "macos")] use voxit_core::RewriteSettings;
 use voxit_core::{
 	self, Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
-	RealtimeEvent, RealtimeSession, RealtimeSessionConfig, TranscriptAssembler, VoiceSessionPlan,
+	RealtimeEvent, RealtimeSession, TranscriptAssembler, VoiceSessionPlan,
 	contextual::{
 		PromptProfileKind, VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort,
 	},
@@ -914,6 +916,7 @@ fn clear_run_output(handle: &mut VoxitHostSessionHandle) {
 	handle.recording_duration_ms = 0;
 }
 
+#[cfg(target_os = "macos")]
 fn realtime_session_config(handle: &VoxitHostSessionHandle) -> RealtimeSessionConfig {
 	RealtimeSessionConfig {
 		model: handle.config.openai.realtime_model.clone(),
@@ -926,6 +929,7 @@ fn realtime_session_config(handle: &VoxitHostSessionHandle) -> RealtimeSessionCo
 	}
 }
 
+#[cfg(target_os = "macos")]
 fn realtime_session_instructions(handle: &VoxitHostSessionHandle) -> String {
 	format!(
 		"You are Voxit, a contextual voice input layer. Listen to the user's dictation for the focused target app and keep any response text suitable for insertion or preview.\n\
@@ -940,6 +944,7 @@ fn realtime_session_instructions(handle: &VoxitHostSessionHandle) -> String {
 	)
 }
 
+#[cfg(target_os = "macos")]
 fn reasoning_effort_value(effort: VoiceReasoningEffort) -> &'static str {
 	match effort {
 		VoiceReasoningEffort::Minimal => "minimal",
@@ -949,6 +954,7 @@ fn reasoning_effort_value(effort: VoiceReasoningEffort) -> &'static str {
 	}
 }
 
+#[cfg(target_os = "macos")]
 fn output_policy_value(policy: VoiceOutputPolicy) -> &'static str {
 	match policy {
 		VoiceOutputPolicy::InsertText => "insert_text",
@@ -991,6 +997,7 @@ fn drain_realtime_events(handle: &mut VoxitHostSessionHandle) {
 	handle.pass1_draft_transcript = transcript.draft;
 }
 
+#[cfg(target_os = "macos")]
 fn realtime_transcript_text(handle: &VoxitHostSessionHandle) -> String {
 	let committed = handle.pass1_committed_transcript.trim();
 	let draft = handle.pass1_draft_transcript.trim();
