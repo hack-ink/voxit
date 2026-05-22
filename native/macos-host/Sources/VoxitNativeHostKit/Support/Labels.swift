@@ -1,3 +1,4 @@
+import Foundation
 import VoxitHostBridge
 
 extension AuthMethod {
@@ -134,5 +135,21 @@ extension HostSnapshot {
       return "Completed"
     }
     return "No Runs"
+  }
+
+  var pass1TranscriptPreview: String? {
+    let committed = pass1CommittedTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let draft = pass1DraftTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    switch (committed.isEmpty, draft.isEmpty) {
+    case (false, false):
+      return "\(committed) \(draft)"
+    case (false, true):
+      return committed
+    case (true, false):
+      return draft
+    case (true, true):
+      return nil
+    }
   }
 }

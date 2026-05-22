@@ -49,17 +49,17 @@ Verification:
 ## 4. Confirm runtime configuration
 
 - Open **Settings...** from the menu bar menu or press `Cmd+,` to confirm shell
-  preferences and permission shortcuts are available.
+  preferences, model choices, and permission shortcuts are available.
 - Check the config file at:
 
 ```text
 $HOME/Library/Application Support/voxit/config.toml
 ```
 
-- Confirm the default runtime hotkey and audio device settings look reasonable for the
-  machine.
-- If you need an explicit microphone, refresh the device list and select it before the
-  first real dictation run.
+- Confirm the default runtime hotkey, OpenAI model IDs, and system-default audio route
+  look reasonable for the machine.
+- If you need an explicit microphone before the Swift picker exposes one, set
+  `audio.input_device_id` and `audio.input_device_name` in `config.toml`.
 
 ## 5. Verify paste flow
 

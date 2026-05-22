@@ -70,6 +70,8 @@ public struct HostSnapshot: Equatable, Sendable {
   public var hasFocusedContext: Bool
   public var selectedTextPresent: Bool
   public var hasRawTranscript: Bool
+  public var hasPass1CommittedTranscript: Bool
+  public var hasPass1DraftTranscript: Bool
   public var hasFinalOutput: Bool
   public var hasError: Bool
   public var recordingDurationMS: UInt64
@@ -80,6 +82,8 @@ public struct HostSnapshot: Equatable, Sendable {
   public var focusedElementRole: String?
   public var promptProfileID: String?
   public var promptDirective: String?
+  public var pass1CommittedTranscript: String?
+  public var pass1DraftTranscript: String?
   public var rawTranscript: String?
   public var finalOutput: String?
   public var lastError: String?
@@ -100,6 +104,8 @@ public struct HostSnapshot: Equatable, Sendable {
     hasFocusedContext: Bool,
     selectedTextPresent: Bool,
     hasRawTranscript: Bool,
+    hasPass1CommittedTranscript: Bool,
+    hasPass1DraftTranscript: Bool,
     hasFinalOutput: Bool,
     hasError: Bool,
     recordingDurationMS: UInt64,
@@ -110,6 +116,8 @@ public struct HostSnapshot: Equatable, Sendable {
     focusedElementRole: String?,
     promptProfileID: String?,
     promptDirective: String?,
+    pass1CommittedTranscript: String?,
+    pass1DraftTranscript: String?,
     rawTranscript: String?,
     finalOutput: String?,
     lastError: String?,
@@ -129,6 +137,8 @@ public struct HostSnapshot: Equatable, Sendable {
     self.hasFocusedContext = hasFocusedContext
     self.selectedTextPresent = selectedTextPresent
     self.hasRawTranscript = hasRawTranscript
+    self.hasPass1CommittedTranscript = hasPass1CommittedTranscript
+    self.hasPass1DraftTranscript = hasPass1DraftTranscript
     self.hasFinalOutput = hasFinalOutput
     self.hasError = hasError
     self.recordingDurationMS = recordingDurationMS
@@ -139,6 +149,8 @@ public struct HostSnapshot: Equatable, Sendable {
     self.focusedElementRole = focusedElementRole
     self.promptProfileID = promptProfileID
     self.promptDirective = promptDirective
+    self.pass1CommittedTranscript = pass1CommittedTranscript
+    self.pass1DraftTranscript = pass1DraftTranscript
     self.rawTranscript = rawTranscript
     self.finalOutput = finalOutput
     self.lastError = lastError
@@ -277,6 +289,34 @@ public final class VoxitHostSession {
     return try currentSnapshot()
   }
 
+  public func saveModelPreferences(
+    realtimeModel: String,
+    realtimeTranscriptionModel: String,
+    finalizeModel: String,
+    rewriteModel: String
+  ) throws -> HostSnapshot {
+    try realtimeModel.withCString { realtime in
+      try realtimeTranscriptionModel.withCString { realtimeTranscription in
+        try finalizeModel.withCString { finalize in
+          try rewriteModel.withCString { rewrite in
+            try requireOk(
+              voxit_host_session_save_model_preferences(
+                handle,
+                realtime,
+                realtimeTranscription,
+                finalize,
+                rewrite
+              ),
+              context: "saving model preferences"
+            )
+          }
+        }
+      }
+    }
+
+    return try currentSnapshot()
+  }
+
   public func setProfileOverride(_ profileKind: PromptProfileKind) throws -> HostSnapshot {
     try requireOk(
       voxit_host_session_set_profile_override(handle, encode(promptProfileKind: profileKind)),
@@ -321,6 +361,8 @@ public final class VoxitHostSession {
       hasFocusedContext: snapshot.has_focused_context != 0,
       selectedTextPresent: snapshot.selected_text_present != 0,
       hasRawTranscript: snapshot.has_raw_transcript != 0,
+      hasPass1CommittedTranscript: snapshot.has_pass1_committed_transcript != 0,
+      hasPass1DraftTranscript: snapshot.has_pass1_draft_transcript != 0,
       hasFinalOutput: snapshot.has_final_output != 0,
       hasError: snapshot.has_error != 0,
       recordingDurationMS: snapshot.recording_duration_ms,
@@ -331,6 +373,8 @@ public final class VoxitHostSession {
       focusedElementRole: try copyString(field: VOXIT_HOST_STRING_FOCUSED_ELEMENT_ROLE),
       promptProfileID: try copyString(field: VOXIT_HOST_STRING_PROMPT_PROFILE_ID),
       promptDirective: try copyString(field: VOXIT_HOST_STRING_PROMPT_DIRECTIVE),
+      pass1CommittedTranscript: try copyString(field: VOXIT_HOST_STRING_PASS1_COMMITTED_TRANSCRIPT),
+      pass1DraftTranscript: try copyString(field: VOXIT_HOST_STRING_PASS1_DRAFT_TRANSCRIPT),
       rawTranscript: try copyString(field: VOXIT_HOST_STRING_RAW_TRANSCRIPT),
       finalOutput: try copyString(field: VOXIT_HOST_STRING_FINAL_OUTPUT),
       lastError: try copyString(field: VOXIT_HOST_STRING_LAST_ERROR),

@@ -55,6 +55,9 @@ struct RecordingHUDView: View {
     if let rawTranscript = store.snapshot?.rawTranscript {
       return rawTranscript
     }
+    if let pass1Transcript = store.snapshot?.pass1TranscriptPreview {
+      return pass1Transcript
+    }
     if let error = store.snapshot?.lastError {
       return error
     }

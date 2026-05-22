@@ -5,7 +5,9 @@ public struct VoxitNativeHostApp: App {
   @Environment(\.openWindow) private var openWindow
   @StateObject private var store = HostStore()
   @StateObject private var settingsStore = VoxitSettingsStore()
+  @StateObject private var hotkeyMonitor = GlobalHotkeyMonitor()
   @State private var settingsWindowController: VoxitSettingsWindowController?
+  @State private var recordingHUDWindowController: RecordingHUDWindowController?
 
   public init() {}
 
@@ -16,6 +18,7 @@ public struct VoxitNativeHostApp: App {
         .task {
           VoxitArtwork.applyApplicationIcon()
           configureSettingsSync()
+          configureHotkeyMonitor()
           await store.reload()
           await store.savePreferences(settingsStore.settings)
           await store.setGlossary(UserDefaults.standard.string(forKey: "glossaryTerms") ?? "")
@@ -36,10 +39,6 @@ public struct VoxitNativeHostApp: App {
         Button("Start Dictation") {
           startDictation()
         }
-        .keyboardShortcut(
-          settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
-          modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
-        )
 
         Button("Stop Dictation") {
           Task {
@@ -60,15 +59,6 @@ public struct VoxitNativeHostApp: App {
       }
     }
 
-    Window("Voxit Recording", id: "recording-hud") {
-      RecordingHUDView(store: store)
-        .task {
-          await store.reload()
-        }
-    }
-    .windowResizability(.contentSize)
-    .defaultPosition(.topTrailing)
-
     MenuBarExtra {
       Button("Open Voxit") {
         openWindow(id: "main")
@@ -79,10 +69,6 @@ public struct VoxitNativeHostApp: App {
       Button("Start Dictation") {
         startDictation()
       }
-      .keyboardShortcut(
-        settingsStore.settings.dictationHotkeyPresentation.swiftUIKeyEquivalent,
-        modifiers: settingsStore.settings.dictationHotkeyPresentation.swiftUIModifiers
-      )
 
       Button("Stop Dictation") {
         Task {
@@ -121,18 +107,77 @@ public struct VoxitNativeHostApp: App {
   @MainActor
   private func configureSettingsSync() {
     settingsStore.setSyncHandler { settings in
-      Task {
+      Task { @MainActor in
         await store.savePreferences(settings)
+        configureHotkeyMonitor()
       }
     }
   }
 
   @MainActor
+  private func configureHotkeyMonitor() {
+    hotkeyMonitor.configure(
+      settings: settingsStore.settings,
+      keyDown: {
+        handleHotkeyDown()
+      },
+      keyUp: {
+        handleHotkeyUp()
+      }
+    )
+  }
+
+  @MainActor
   private func startDictation() {
-    openWindow(id: "recording-hud")
+    presentRecordingHUD()
     Task {
       await store.startDictation()
     }
+  }
+
+  @MainActor
+  private func handleHotkeyDown() {
+    presentRecordingHUD()
+
+    if settingsStore.settings.hotkeyMode == .hold {
+      guard store.snapshot?.dictationState != .listening else {
+        return
+      }
+
+      Task {
+        await store.startDictation()
+      }
+    } else if store.snapshot?.dictationState == .listening {
+      Task {
+        await store.stopDictation()
+      }
+    } else {
+      Task {
+        await store.startDictation()
+      }
+    }
+  }
+
+  @MainActor
+  private func handleHotkeyUp() {
+    guard settingsStore.settings.hotkeyMode == .hold,
+      store.snapshot?.dictationState == .listening
+    else {
+      return
+    }
+
+    Task {
+      await store.stopDictation()
+    }
+  }
+
+  @MainActor
+  private func presentRecordingHUD() {
+    if recordingHUDWindowController == nil {
+      recordingHUDWindowController = RecordingHUDWindowController(store: store)
+    }
+
+    recordingHUDWindowController?.present()
   }
 
   @MainActor

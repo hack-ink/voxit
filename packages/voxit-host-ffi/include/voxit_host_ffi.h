@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define VOXIT_HOST_FFI_ABI_VERSION 4u
+#define VOXIT_HOST_FFI_ABI_VERSION 6u
 
 typedef struct VoxitHostSessionHandle VoxitHostSessionHandle;
 
@@ -86,6 +86,8 @@ typedef enum VoxitHostStringField {
 	VOXIT_HOST_STRING_RAW_TRANSCRIPT = 7,
 	VOXIT_HOST_STRING_FINAL_OUTPUT = 8,
 	VOXIT_HOST_STRING_LAST_ERROR = 9,
+	VOXIT_HOST_STRING_PASS1_COMMITTED_TRANSCRIPT = 10,
+	VOXIT_HOST_STRING_PASS1_DRAFT_TRANSCRIPT = 11,
 } VoxitHostStringField;
 
 typedef struct VoxitHostConfig {
@@ -111,6 +113,8 @@ typedef struct VoxitHostSnapshot {
 	uint8_t has_focused_context;
 	uint8_t selected_text_present;
 	uint8_t has_raw_transcript;
+	uint8_t has_pass1_committed_transcript;
+	uint8_t has_pass1_draft_transcript;
 	uint8_t has_final_output;
 	uint8_t has_error;
 	uint64_t recording_duration_ms;
@@ -131,6 +135,13 @@ enum VoxitStatus voxit_host_session_save_preferences(
 	VoxitHostSessionHandle *handle,
 	struct VoxitHostPreferences preferences,
 	const char *hotkey_chord
+);
+enum VoxitStatus voxit_host_session_save_model_preferences(
+	VoxitHostSessionHandle *handle,
+	const char *realtime_model,
+	const char *realtime_transcription_model,
+	const char *finalize_model,
+	const char *rewrite_model
 );
 enum VoxitStatus voxit_host_session_set_profile_override(
 	VoxitHostSessionHandle *handle,

@@ -167,7 +167,7 @@ Swift hosts own:
 
 - menu bar, HUD, main window, and Settings presentation
 - macOS-specific context capture
-- permission prompts and native controls
+- permission panes and native controls
 - rendering Rust-owned snapshots and session plans
 - user confirmation UX
 

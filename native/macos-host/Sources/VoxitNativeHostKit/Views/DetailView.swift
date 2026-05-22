@@ -136,6 +136,9 @@ private struct ActivityDetail: View {
     if let rawTranscript = snapshot?.rawTranscript {
       TranscriptPreview(title: "Raw Transcript", text: rawTranscript)
     }
+    if let pass1Transcript = snapshot?.pass1TranscriptPreview {
+      TranscriptPreview(title: "Realtime Draft", text: pass1Transcript)
+    }
   }
 }
 

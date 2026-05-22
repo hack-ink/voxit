@@ -21,8 +21,8 @@ Consequences:
 - The main Voxit window is a control center for activity, app rules, profiles,
   glossary, prompt experiments, and debug/evaluation surfaces.
 - The Settings window stays separate and limited to app preferences such as startup,
-  shortcuts, microphone, permissions, account defaults, privacy, logging, and
-  notifications.
+  shortcuts, model choices, microphone, permissions, account defaults, privacy, logging,
+  and notifications.
 - Swift owns the native macOS presentation layer and UI glue. Rust owns durable product
   logic, context classification, prompt profile selection, voice session planning,
   output policy, and provider orchestration.

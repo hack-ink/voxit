@@ -7,13 +7,14 @@
 use std::{
 	ffi::{CStr, c_char},
 	ptr::{self, NonNull},
+	sync::mpsc::{self, Receiver, TryRecvError},
 };
 
 #[cfg(target_os = "macos")] use voxit_audio::Recorder;
 #[cfg(target_os = "macos")] use voxit_core::RewriteSettings;
 use voxit_core::{
 	self, Config, ContextualVoiceRouter, FocusedAppContext, NativeHostSnapshot, PlatformHost,
-	VoiceSessionPlan,
+	RealtimeEvent, RealtimeSession, RealtimeSessionConfig, TranscriptAssembler, VoiceSessionPlan,
 	contextual::{
 		PromptProfileKind, VoiceInteractionTier, VoiceOutputPolicy, VoiceReasoningEffort,
 	},
@@ -22,7 +23,7 @@ use voxit_core::{
 #[cfg(target_os = "macos")] use voxit_macos::TargetApp;
 
 /// ABI version exported by the thin C host bridge.
-pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 4;
+pub const VOXIT_HOST_FFI_ABI_VERSION: u32 = 6;
 
 /// Opaque session handle owned by the native host through the C ABI.
 pub struct VoxitHostSessionHandle {
@@ -32,10 +33,15 @@ pub struct VoxitHostSessionHandle {
 	profile_override: Option<PromptProfileKind>,
 	voice_plan: VoiceSessionPlan,
 	glossary_terms: String,
+	transcript_assembler: TranscriptAssembler,
+	pass1_committed_transcript: String,
+	pass1_draft_transcript: String,
 	last_raw_transcript: String,
 	last_final_output: String,
 	last_error: String,
 	recording_duration_ms: u64,
+	realtime_session: Option<RealtimeSession>,
+	realtime_event_rx: Option<Receiver<RealtimeEvent>>,
 	#[cfg(target_os = "macos")]
 	recorder: Option<Recorder>,
 	#[cfg(target_os = "macos")]
@@ -194,6 +200,10 @@ pub enum VoxitHostStringField {
 	FinalOutput = 8,
 	/// Latest user-actionable error.
 	LastError = 9,
+	/// Latest committed realtime Pass1 transcript.
+	Pass1CommittedTranscript = 10,
+	/// Latest in-flight realtime Pass1 draft transcript.
+	Pass1DraftTranscript = 11,
 }
 
 /// FFI-safe session configuration.
@@ -244,6 +254,10 @@ pub struct VoxitHostSnapshot {
 	pub selected_text_present: u8,
 	/// Non-zero when a raw Pass2 transcript is available.
 	pub has_raw_transcript: u8,
+	/// Non-zero when realtime Pass1 committed transcript text is available.
+	pub has_pass1_committed_transcript: u8,
+	/// Non-zero when realtime Pass1 draft transcript text is available.
+	pub has_pass1_draft_transcript: u8,
 	/// Non-zero when a final output is available.
 	pub has_final_output: u8,
 	/// Non-zero when the last command failed or produced a warning.
@@ -273,6 +287,8 @@ impl Default for VoxitHostSnapshot {
 			has_focused_context: 0,
 			selected_text_present: 0,
 			has_raw_transcript: 0,
+			has_pass1_committed_transcript: 0,
+			has_pass1_draft_transcript: 0,
 			has_final_output: 0,
 			has_error: 0,
 			recording_duration_ms: 0,
@@ -311,10 +327,15 @@ pub extern "C" fn voxit_host_session_create(
 		profile_override: None,
 		voice_plan,
 		glossary_terms: String::new(),
+		transcript_assembler: TranscriptAssembler::new(),
+		pass1_committed_transcript: String::new(),
+		pass1_draft_transcript: String::new(),
 		last_raw_transcript: String::new(),
 		last_final_output: String::new(),
 		last_error: String::new(),
 		recording_duration_ms: 0,
+		realtime_session: None,
+		realtime_event_rx: None,
 		#[cfg(target_os = "macos")]
 		recorder: None,
 		#[cfg(target_os = "macos")]
@@ -331,7 +352,9 @@ pub extern "C" fn voxit_host_session_create(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn voxit_host_session_destroy(handle: *mut VoxitHostSessionHandle) {
 	if let Some(handle) = NonNull::new(handle) {
-		unsafe { drop(Box::from_raw(handle.as_ptr())) };
+		let mut handle = unsafe { Box::from_raw(handle.as_ptr()) };
+
+		stop_realtime_preview(&mut handle);
 	}
 }
 
@@ -346,13 +369,16 @@ pub unsafe extern "C" fn voxit_host_session_copy_snapshot(
 	handle: *mut VoxitHostSessionHandle,
 	out: *mut VoxitHostSnapshot,
 ) -> VoxitStatus {
-	let Some(handle) = NonNull::new(handle) else {
+	let Some(mut handle) = NonNull::new(handle) else {
 		return VoxitStatus::NullHandle;
 	};
 	let Some(out) = NonNull::new(out) else {
 		return VoxitStatus::NullOutput;
 	};
-	let handle_ref = unsafe { handle.as_ref() };
+	let handle_ref = unsafe { handle.as_mut() };
+
+	drain_realtime_events(handle_ref);
+
 	let snapshot = &handle_ref.snapshot;
 	let focused_context = &handle_ref.focused_context;
 	let voice_plan = &handle_ref.voice_plan;
@@ -469,6 +495,54 @@ pub unsafe extern "C" fn voxit_host_session_save_preferences(
 	save_preferences(handle, preferences, hotkey_chord)
 }
 
+/// Saves OpenAI model preferences through the Rust-owned config file.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`voxit_host_session_create`]. Model
+/// pointers must point to null-terminated UTF-8 strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn voxit_host_session_save_model_preferences(
+	handle: *mut VoxitHostSessionHandle,
+	realtime_model: *const c_char,
+	realtime_transcription_model: *const c_char,
+	finalize_model: *const c_char,
+	rewrite_model: *const c_char,
+) -> VoxitStatus {
+	let Some(mut handle) = NonNull::new(handle) else {
+		return VoxitStatus::NullHandle;
+	};
+	let handle = unsafe { handle.as_mut() };
+	let realtime_model = match read_required_c_string(handle, realtime_model, "realtime model") {
+		Ok(value) => value,
+		Err(status) => return status,
+	};
+	let realtime_transcription_model = match read_required_c_string(
+		handle,
+		realtime_transcription_model,
+		"realtime transcription model",
+	) {
+		Ok(value) => value,
+		Err(status) => return status,
+	};
+	let finalize_model = match read_required_c_string(handle, finalize_model, "finalize model") {
+		Ok(value) => value,
+		Err(status) => return status,
+	};
+	let rewrite_model = match read_required_c_string(handle, rewrite_model, "rewrite model") {
+		Ok(value) => value,
+		Err(status) => return status,
+	};
+
+	save_model_preferences(
+		handle,
+		realtime_model,
+		realtime_transcription_model,
+		finalize_model,
+		rewrite_model,
+	)
+}
+
 /// Sets a manual prompt-profile override for the current host session.
 ///
 /// # Safety
@@ -555,7 +629,7 @@ pub unsafe extern "C" fn voxit_host_session_copy_string(
 	out: *mut c_char,
 	out_len: usize,
 ) -> VoxitStatus {
-	let Some(handle) = NonNull::new(handle) else {
+	let Some(mut handle) = NonNull::new(handle) else {
 		return VoxitStatus::NullHandle;
 	};
 	let Some(out) = NonNull::new(out) else {
@@ -566,7 +640,10 @@ pub unsafe extern "C" fn voxit_host_session_copy_string(
 		return VoxitStatus::InvalidInput;
 	}
 
-	let handle = unsafe { handle.as_ref() };
+	let handle = unsafe { handle.as_mut() };
+
+	drain_realtime_events(handle);
+
 	let value = string_field_value(handle, field);
 
 	write_c_string(out, out_len, value)
@@ -588,8 +665,31 @@ fn start_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 		let preferred_device_id = (handle.config.audio.input_device_id != 0)
 			.then_some(handle.config.audio.input_device_id);
 
-		match voxit_audio::start_recording_with_stream(64, preferred_device_id) {
-			Ok((recorder, _chunk_rx, selection)) => {
+		match voxit_audio::start_recording_with_stream(
+			64,
+			preferred_device_id,
+			handle.config.audio.realtime_target_rate_hz,
+			1,
+		) {
+			Ok((recorder, chunk_rx, selection)) => {
+				let (event_tx, event_rx) = mpsc::channel();
+
+				match voxit_core::start_realtime_session(
+					realtime_session_config(handle),
+					chunk_rx,
+					event_tx,
+				) {
+					Ok(session) => {
+						handle.realtime_session = Some(session);
+						handle.realtime_event_rx = Some(event_rx);
+					},
+					Err(err) => {
+						handle.realtime_session = None;
+						handle.realtime_event_rx = None;
+						handle.last_error = format!("realtime preview unavailable: {err}");
+					},
+				}
+
 				handle.recorder = Some(recorder);
 				handle.snapshot.dictation_state = DictationSurfaceState::Listening;
 				handle.recording_duration_ms = 0;
@@ -636,6 +736,7 @@ fn stop_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 			Err(err) => {
 				handle.snapshot.dictation_state = DictationSurfaceState::Done;
 
+				stop_realtime_preview(handle);
 				set_error(handle, format!("failed to stop recording: {err}"));
 
 				return VoxitStatus::Ok;
@@ -644,16 +745,28 @@ fn stop_dictation(handle: &mut VoxitHostSessionHandle) -> VoxitStatus {
 
 		handle.recording_duration_ms = recording.duration_ms;
 
+		stop_realtime_preview(handle);
+		drain_realtime_events(handle);
+
 		let (raw_transcript, _) =
 			match voxit_core::transcribe_only(&recording.wav, &handle.config.openai.finalize_model)
 			{
 				Ok(result) => result,
 				Err(err) => {
-					handle.snapshot.dictation_state = DictationSurfaceState::Done;
+					let fallback = realtime_transcript_text(handle);
 
-					set_error(handle, format!("transcription failed: {err}"));
+					if fallback.is_empty() {
+						handle.snapshot.dictation_state = DictationSurfaceState::Done;
 
-					return VoxitStatus::Ok;
+						set_error(handle, format!("transcription failed: {err}"));
+
+						return VoxitStatus::Ok;
+					}
+
+					handle.last_error =
+						format!("transcription failed; using realtime transcript: {err}");
+
+					(fallback, 0)
 				},
 			};
 
@@ -767,7 +880,33 @@ fn save_preferences(
 	VoxitStatus::Ok
 }
 
+fn save_model_preferences(
+	handle: &mut VoxitHostSessionHandle,
+	realtime_model: String,
+	realtime_transcription_model: String,
+	finalize_model: String,
+	rewrite_model: String,
+) -> VoxitStatus {
+	handle.config.openai.realtime_model = realtime_model;
+	handle.config.openai.realtime.transcription_model = realtime_transcription_model;
+	handle.config.openai.finalize_model = finalize_model;
+	handle.config.openai.rewrite_model = rewrite_model;
+
+	if let Err(err) = handle.config.save() {
+		set_error(handle, format!("failed to save config: {err}"));
+	} else {
+		handle.last_error.clear();
+	}
+
+	VoxitStatus::Ok
+}
+
 fn clear_run_output(handle: &mut VoxitHostSessionHandle) {
+	stop_realtime_preview(handle);
+
+	handle.transcript_assembler.reset();
+	handle.pass1_committed_transcript.clear();
+	handle.pass1_draft_transcript.clear();
 	handle.last_raw_transcript.clear();
 	handle.last_final_output.clear();
 	handle.last_error.clear();
@@ -775,8 +914,124 @@ fn clear_run_output(handle: &mut VoxitHostSessionHandle) {
 	handle.recording_duration_ms = 0;
 }
 
+fn realtime_session_config(handle: &VoxitHostSessionHandle) -> RealtimeSessionConfig {
+	RealtimeSessionConfig {
+		model: handle.config.openai.realtime_model.clone(),
+		transcription_model: handle.config.openai.realtime.transcription_model.clone(),
+		language: handle.config.openai.language.clone(),
+		sample_rate_hz: handle.config.audio.realtime_target_rate_hz,
+		noise_reduction: handle.config.openai.realtime.noise_reduction.clone(),
+		instructions: realtime_session_instructions(handle),
+		reasoning_effort: reasoning_effort_value(handle.voice_plan.reasoning_effort).to_string(),
+	}
+}
+
+fn realtime_session_instructions(handle: &VoxitHostSessionHandle) -> String {
+	format!(
+		"You are Voxit, a contextual voice input layer. Listen to the user's dictation for the focused target app and keep any response text suitable for insertion or preview.\n\
+		Active profile: {profile_title} ({profile_id}).\n\
+		Profile direction: {prompt_directive}\n\
+		Output policy: {output_policy}.\n\
+		Do not claim that app actions or shell commands have already run.",
+		profile_title = handle.voice_plan.profile_title,
+		profile_id = handle.voice_plan.profile_id,
+		prompt_directive = handle.voice_plan.prompt_directive,
+		output_policy = output_policy_value(handle.voice_plan.output_policy),
+	)
+}
+
+fn reasoning_effort_value(effort: VoiceReasoningEffort) -> &'static str {
+	match effort {
+		VoiceReasoningEffort::Minimal => "minimal",
+		VoiceReasoningEffort::Low => "low",
+		VoiceReasoningEffort::Medium => "medium",
+		VoiceReasoningEffort::High => "high",
+	}
+}
+
+fn output_policy_value(policy: VoiceOutputPolicy) -> &'static str {
+	match policy {
+		VoiceOutputPolicy::InsertText => "insert_text",
+		VoiceOutputPolicy::PreviewBeforeInsert => "preview_before_insert",
+		VoiceOutputPolicy::ConfirmBeforeAction => "confirm_before_action",
+	}
+}
+
+fn stop_realtime_preview(handle: &mut VoxitHostSessionHandle) {
+	if let Some(session) = handle.realtime_session.take() {
+		session.stop();
+	}
+}
+
+fn drain_realtime_events(handle: &mut VoxitHostSessionHandle) {
+	loop {
+		let event = match handle.realtime_event_rx.as_ref().map(Receiver::try_recv) {
+			Some(Ok(event)) => event,
+			Some(Err(TryRecvError::Empty)) | None => break,
+			Some(Err(TryRecvError::Disconnected)) => {
+				handle.realtime_event_rx = None;
+
+				break;
+			},
+		};
+
+		match event {
+			RealtimeEvent::Draft(event) | RealtimeEvent::Committed(event) => {
+				handle.transcript_assembler.apply(event);
+			},
+			RealtimeEvent::StreamError(reason) => {
+				handle.last_error = reason;
+			},
+		}
+	}
+
+	let transcript = handle.transcript_assembler.snapshot();
+
+	handle.pass1_committed_transcript = transcript.committed;
+	handle.pass1_draft_transcript = transcript.draft;
+}
+
+fn realtime_transcript_text(handle: &VoxitHostSessionHandle) -> String {
+	let committed = handle.pass1_committed_transcript.trim();
+	let draft = handle.pass1_draft_transcript.trim();
+
+	match (committed.is_empty(), draft.is_empty()) {
+		(false, false) => format!("{committed} {draft}"),
+		(false, true) => committed.to_string(),
+		(true, false) => draft.to_string(),
+		(true, true) => String::new(),
+	}
+}
+
 fn set_error(handle: &mut VoxitHostSessionHandle, message: impl Into<String>) {
 	handle.last_error = message.into();
+}
+
+fn read_required_c_string(
+	handle: &mut VoxitHostSessionHandle,
+	value: *const c_char,
+	label: &str,
+) -> Result<String, VoxitStatus> {
+	let Some(value) = NonNull::new(value.cast_mut()) else {
+		set_error(handle, format!("{label} is missing"));
+
+		return Err(VoxitStatus::InvalidInput);
+	};
+	let value = unsafe { CStr::from_ptr(value.as_ptr()) };
+	let Ok(value) = value.to_str() else {
+		set_error(handle, format!("{label} is not valid UTF-8"));
+
+		return Err(VoxitStatus::Ok);
+	};
+	let value = value.trim();
+
+	if value.is_empty() {
+		set_error(handle, format!("{label} cannot be empty"));
+
+		return Err(VoxitStatus::Ok);
+	}
+
+	Ok(value.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -815,6 +1070,8 @@ fn encode_snapshot(
 		has_focused_context: 0,
 		selected_text_present: 0,
 		has_raw_transcript: 0,
+		has_pass1_committed_transcript: 0,
+		has_pass1_draft_transcript: 0,
 		has_final_output: 0,
 		has_error: 0,
 		recording_duration_ms: 0,
@@ -836,6 +1093,9 @@ fn encode_snapshot_with_context(
 	encoded.has_focused_context = u8::from(!focused_context.is_empty());
 	encoded.selected_text_present = u8::from(focused_context.selected_text_present);
 	encoded.has_raw_transcript = u8::from(!handle.last_raw_transcript.is_empty());
+	encoded.has_pass1_committed_transcript =
+		u8::from(!handle.pass1_committed_transcript.is_empty());
+	encoded.has_pass1_draft_transcript = u8::from(!handle.pass1_draft_transcript.is_empty());
 	encoded.has_final_output = u8::from(!handle.last_final_output.is_empty());
 	encoded.has_error = u8::from(!handle.last_error.is_empty());
 	encoded.recording_duration_ms = handle.recording_duration_ms;
@@ -946,6 +1206,8 @@ fn string_field_value(handle: &VoxitHostSessionHandle, field: VoxitHostStringFie
 		VoxitHostStringField::RawTranscript => &handle.last_raw_transcript,
 		VoxitHostStringField::FinalOutput => &handle.last_final_output,
 		VoxitHostStringField::LastError => &handle.last_error,
+		VoxitHostStringField::Pass1CommittedTranscript => &handle.pass1_committed_transcript,
+		VoxitHostStringField::Pass1DraftTranscript => &handle.pass1_draft_transcript,
 	}
 }
 
@@ -1020,6 +1282,8 @@ mod tests {
 		assert_eq!(snapshot.rewrite_enabled, 1);
 		assert_eq!(snapshot.has_focused_context, 0);
 		assert_eq!(snapshot.selected_text_present, 0);
+		assert_eq!(snapshot.has_pass1_committed_transcript, 0);
+		assert_eq!(snapshot.has_pass1_draft_transcript, 0);
 		assert_eq!(snapshot.prompt_profile_kind, VoxitPromptProfileKind::FastDictation);
 		assert_eq!(snapshot.voice_tier, VoxitVoiceInteractionTier::FastDictation);
 		assert_eq!(snapshot.reasoning_effort, VoxitVoiceReasoningEffort::Minimal);
