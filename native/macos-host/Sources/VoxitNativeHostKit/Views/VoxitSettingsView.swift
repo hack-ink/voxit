@@ -3,8 +3,8 @@ import SwiftUI
 
 enum VoxitSettingsWindowMetrics {
   static let width: CGFloat = 620
-  static let minHeight: CGFloat = 336
-  static let idealHeight: CGFloat = 396
+  static let minHeight: CGFloat = 420
+  static let idealHeight: CGFloat = 520
   static let cornerRadius: CGFloat = 18
 }
 
@@ -38,6 +38,10 @@ final class VoxitSettingsViewModel: ObservableObject {
 
   func openAccessibilitySettings() {
     openPrivacySettings(query: "Privacy_Accessibility")
+  }
+
+  func openInputMonitoringSettings() {
+    openPrivacySettings(query: "Privacy_ListenEvent")
   }
 
   private func openPrivacySettings(query: String) {
@@ -88,6 +92,7 @@ struct VoxitSettingsView: View {
 private enum VoxitSettingsSection: String, CaseIterable, Identifiable {
   case general
   case dictation
+  case models
   case audio
   case permissions
   case about
@@ -100,6 +105,8 @@ private enum VoxitSettingsSection: String, CaseIterable, Identifiable {
       return "General"
     case .dictation:
       return "Dictation"
+    case .models:
+      return "Models"
     case .audio:
       return "Audio"
     case .permissions:
@@ -115,6 +122,8 @@ private enum VoxitSettingsSection: String, CaseIterable, Identifiable {
       return "Startup"
     case .dictation:
       return "Shortcut"
+    case .models:
+      return "OpenAI"
     case .audio:
       return "Input"
     case .permissions:
@@ -130,6 +139,8 @@ private enum VoxitSettingsSection: String, CaseIterable, Identifiable {
       return "switch.2"
     case .dictation:
       return "waveform"
+    case .models:
+      return "cpu"
     case .audio:
       return "mic"
     case .permissions:
@@ -141,7 +152,7 @@ private enum VoxitSettingsSection: String, CaseIterable, Identifiable {
 
   var allowsRestoreDefaults: Bool {
     switch self {
-    case .general, .dictation, .audio:
+    case .general, .dictation, .models, .audio:
       return true
     case .permissions, .about:
       return false
@@ -259,6 +270,8 @@ private struct SettingsDashboard: View {
           GeneralSettingsPane(model: model)
         case .dictation:
           DictationSettingsPane(model: model)
+        case .models:
+          ModelsSettingsPane(model: model)
         case .audio:
           AudioSettingsPane(model: model)
         case .permissions:
@@ -360,6 +373,130 @@ private struct DictationSettingsPane: View {
   }
 }
 
+private struct ModelsSettingsPane: View {
+  @ObservedObject var model: VoxitSettingsViewModel
+
+  var body: some View {
+    SettingsPanel {
+      ModelSettingRow(
+        title: "Realtime voice",
+        presets: ["gpt-realtime-2"],
+        modelID: modelBinding(\.realtimeModel)
+      )
+      ModelSettingRow(
+        title: "Realtime text",
+        presets: ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"],
+        modelID: modelBinding(\.realtimeTranscriptionModel)
+      )
+      ModelSettingRow(
+        title: "Finalize",
+        presets: ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
+        modelID: modelBinding(\.finalizeModel)
+      )
+      ModelSettingRow(
+        title: "Rewrite",
+        presets: ["gpt-5.2-mini", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+        modelID: modelBinding(\.rewriteModel)
+      )
+    }
+  }
+
+  private func modelBinding(_ keyPath: WritableKeyPath<VoxitSettings, String>) -> Binding<String> {
+    Binding(
+      get: { model.settings[keyPath: keyPath] },
+      set: { value in
+        model.update { $0[keyPath: keyPath] = value }
+      }
+    )
+  }
+}
+
+private struct ModelSettingRow: View {
+  private static let customPresetTag = "__voxit_custom_model__"
+
+  let title: String
+  let presets: [String]
+  @Binding var modelID: String
+  @State private var draftModelID: String
+
+  init(title: String, presets: [String], modelID: Binding<String>) {
+    self.title = title
+    self.presets = presets
+    self._modelID = modelID
+    self._draftModelID = State(initialValue: modelID.wrappedValue)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(title)
+          .frame(width: 116, alignment: .leading)
+        Picker("", selection: presetBinding) {
+          ForEach(presets, id: \.self) { preset in
+            Text(preset).tag(preset)
+          }
+          Text("Custom").tag(Self.customPresetTag)
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 210, alignment: .leading)
+      }
+
+      HStack(spacing: 6) {
+        TextField("Model ID", text: $draftModelID)
+          .textFieldStyle(.roundedBorder)
+          .onSubmit(commitDraft)
+        Button("Apply", action: commitDraft)
+          .disabled(canApplyDraft == false)
+      }
+      .padding(.leading, 124)
+    }
+    .onChange(of: modelID) { _, newValue in
+      if draftModelID != newValue {
+        draftModelID = newValue
+      }
+    }
+  }
+
+  private var presetBinding: Binding<String> {
+    Binding(
+      get: {
+        presets.contains(modelID) ? modelID : Self.customPresetTag
+      },
+      set: { value in
+        guard value != Self.customPresetTag else {
+          return
+        }
+        draftModelID = value
+        modelID = value
+      }
+    )
+  }
+
+  private var canApplyDraft: Bool {
+    let sanitized = sanitizedDraftModelID
+
+    return sanitized.isEmpty == false && sanitized != modelID
+  }
+
+  private var sanitizedDraftModelID: String {
+    draftModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func commitDraft() {
+    let sanitized = sanitizedDraftModelID
+
+    guard sanitized.isEmpty == false else {
+      draftModelID = modelID
+
+      return
+    }
+
+    draftModelID = sanitized
+    modelID = sanitized
+  }
+}
+
 private struct AudioSettingsPane: View {
   @ObservedObject var model: VoxitSettingsViewModel
 
@@ -403,6 +540,13 @@ private struct PermissionsSettingsPane: View {
         LabeledContent("Accessibility", value: "Optional")
         Button("Open") {
           model.openAccessibilitySettings()
+        }
+      }
+
+      HStack {
+        LabeledContent("Input Monitoring", value: "Shortcut")
+        Button("Open") {
+          model.openInputMonitoringSettings()
         }
       }
     }

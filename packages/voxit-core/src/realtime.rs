@@ -27,18 +27,30 @@ pub const REALTIME_ENDPOINT: &str = "wss://api.openai.com/v1/realtime";
 pub struct RealtimeSessionConfig {
 	/// API model id.
 	pub model: String,
+	/// Input-audio transcription model id.
+	pub transcription_model: String,
+	/// Input language hint for realtime transcription.
+	pub language: String,
 	/// Input sample rate expected by OpenAI (`24000` by plan).
 	pub sample_rate_hz: u32,
 	/// `near_field` | `far_field` | `off`.
 	pub noise_reduction: String,
+	/// Session instructions for contextual voice behavior.
+	pub instructions: String,
+	/// Realtime reasoning effort for models that support it.
+	pub reasoning_effort: String,
 }
 impl Default for RealtimeSessionConfig {
 	/// Default session configuration for English pass1 streaming.
 	fn default() -> Self {
 		Self {
-			model: "gpt-4o-mini-transcribe".to_string(),
+			model: "gpt-realtime-2".to_string(),
+			transcription_model: "gpt-4o-mini-transcribe".to_string(),
+			language: "en".to_string(),
 			sample_rate_hz: 24_000,
 			noise_reduction: "near_field".to_string(),
+			instructions: "Transcribe the user's dictation as text for the target app.".to_string(),
+			reasoning_effort: "minimal".to_string(),
 		}
 	}
 }
@@ -139,8 +151,13 @@ fn start_realtime_session_impl(
 	event_tx: Sender<RealtimeEvent>,
 ) -> Result<RealtimeSession, RealtimeError> {
 	let (stop_tx, stop_rx) = mpsc::channel::<()>();
+	let worker_event_tx = event_tx.clone();
 	let worker = thread::spawn(move || {
-		let _ = run_realtime_worker(api_key, account_id, config, chunk_rx, event_tx, stop_rx);
+		if let Err(err) =
+			run_realtime_worker(api_key, account_id, config, chunk_rx, event_tx, stop_rx)
+		{
+			let _ = worker_event_tx.send(RealtimeEvent::StreamError(err.to_string()));
+		}
 	});
 
 	Ok(RealtimeSession { stop_tx: Some(stop_tx), worker: Some(worker) })
@@ -159,6 +176,7 @@ fn run_realtime_worker(
 		reason: format!("failed to create tokio runtime: {err}"),
 	})?;
 	let endpoint = format!("{REALTIME_ENDPOINT}?model={}", config.model);
+	let session_update = realtime_session_update(&config);
 
 	rt.block_on(async move {
 		let mut builder = Request::builder()
@@ -174,22 +192,6 @@ fn run_realtime_worker(
 		let request = builder.body(()).map_err(|err| RealtimeError::RuntimeError {
 			reason: format!("invalid realtime request: {err}"),
 		})?;
-		let session_update = serde_json::json!({
-				"type": "session.update",
-				"session": {
-					"audio": {
-						"input": {
-						"format": {
-							"type": "audio/pcm",
-							"rate": config.sample_rate_hz,
-						},
-						"noise_reduction": { "type": config.noise_reduction },
-						"transcription": { "model": config.model },
-						"turn_detection": { "type": "server_vad" },
-					},
-				},
-			}
-		});
 		let (mut ws, _) = tokio_tungstenite::connect_async(request).await.map_err(|err| {
 			RealtimeError::RuntimeError {
 				reason: format!("realtime websocket connect failed: {err}"),
@@ -271,6 +273,37 @@ fn run_realtime_worker(
 	Ok(())
 }
 
+fn realtime_session_update(config: &RealtimeSessionConfig) -> Value {
+	serde_json::json!({
+		"type": "session.update",
+		"session": {
+			"type": "realtime",
+			"instructions": config.instructions,
+			"output_modalities": ["text"],
+			"reasoning": {
+				"effort": config.reasoning_effort,
+			},
+			"audio": {
+				"input": {
+					"format": {
+						"type": "audio/pcm",
+						"rate": config.sample_rate_hz,
+					},
+					"noise_reduction": noise_reduction_payload(&config.noise_reduction),
+					"transcription": {
+						"model": config.transcription_model,
+						"language": config.language,
+					},
+					"turn_detection": {
+						"type": "server_vad",
+						"create_response": false,
+					},
+				},
+			},
+		}
+	})
+}
+
 fn chunk_to_base64(samples: &[i16]) -> String {
 	let mut bytes = Vec::with_capacity(samples.len() * 2);
 
@@ -279,6 +312,10 @@ fn chunk_to_base64(samples: &[i16]) -> String {
 	}
 
 	STANDARD.encode(bytes)
+}
+
+fn noise_reduction_payload(profile: &str) -> Value {
+	if profile == "off" { Value::Null } else { serde_json::json!({ "type": profile }) }
 }
 
 fn parse_realtime_frame(body: &str) -> Result<Option<ParsedFrame>, RealtimeError> {
@@ -368,6 +405,14 @@ mod tests {
 		let config = RealtimeSessionConfig::default();
 
 		assert!(config.model.contains("gpt"));
+		assert_eq!(config.transcription_model, "gpt-4o-mini-transcribe");
+		assert_eq!(config.language, "en");
 		assert_eq!(config.sample_rate_hz, 24_000);
+		assert_eq!(config.reasoning_effort, "minimal");
+	}
+
+	#[test]
+	fn noise_reduction_off_maps_to_null() {
+		assert!(realtime::noise_reduction_payload("off").is_null());
 	}
 }

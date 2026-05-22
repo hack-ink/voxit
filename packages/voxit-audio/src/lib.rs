@@ -100,6 +100,8 @@ impl Recorder {
 	pub fn start_with_stream(
 		stream_tx: Option<SyncSender<AudioChunk>>,
 		selection: &InputDeviceSelection,
+		target_sample_rate_hz: u32,
+		target_channels: u16,
 	) -> Result<Self, String> {
 		let use_voice_processing = selection.requested_device_id.is_none();
 		let io_type =
@@ -121,11 +123,15 @@ impl Recorder {
 		let input_format =
 			audio_unit.input_stream_format().map_err(|err: Error| err.to_string())?;
 		let _ = audio_unit.uninitialize();
-		let (sample_rate, channels) = configure_input_format(
-			&mut audio_unit,
-			input_format.sample_rate,
-			input_format.channels,
-		)?;
+		let requested_sample_rate = if target_sample_rate_hz == 0 {
+			input_format.sample_rate
+		} else {
+			target_sample_rate_hz as f64
+		};
+		let requested_channels =
+			if target_channels == 0 { input_format.channels } else { u32::from(target_channels) };
+		let (sample_rate, channels) =
+			configure_input_format(&mut audio_unit, requested_sample_rate, requested_channels)?;
 		let recording = Arc::new(Mutex::new(Vec::<i16>::new()));
 		let recording_cb = Arc::clone(&recording);
 		let callback_tx = stream_tx.clone();
@@ -265,10 +271,13 @@ pub struct InputDeviceSelection {
 pub fn start_recording_with_stream(
 	chunk_capacity: usize,
 	preferred_device_id: Option<u32>,
+	target_sample_rate_hz: u32,
+	target_channels: u16,
 ) -> Result<(Recorder, AudioChunkReceiver, InputDeviceSelection), String> {
 	let (tx, rx) = mpsc::sync_channel(chunk_capacity);
 	let selection = resolve_input_device(preferred_device_id)?;
-	let recorder = Recorder::start_with_stream(Some(tx), &selection)?;
+	let recorder =
+		Recorder::start_with_stream(Some(tx), &selection, target_sample_rate_hz, target_channels)?;
 
 	Ok((recorder, rx, selection))
 }
@@ -313,9 +322,13 @@ pub fn list_input_devices() -> Result<Vec<InputDevice>, String> {
 pub fn start_recording_with_stream(
 	_chnk_capacity: usize,
 	_preferred_device_id: Option<u32>,
+	_target_sample_rate_hz: u32,
+	_target_channels: u16,
 ) -> Result<(Recorder, AudioChunkReceiver, InputDeviceSelection), String> {
 	let _ = _chnk_capacity;
 	let _ = _preferred_device_id;
+	let _ = _target_sample_rate_hz;
+	let _ = _target_channels;
 
 	Err("recording is only supported on macOS in this build".to_string())
 }

@@ -16,8 +16,9 @@ files.
 ## Top-level surfaces
 
 - `native/macos-host/` holds the SwiftPM native macOS host. It owns platform UI
-  composition, the menu bar extra, the Voxit control-center window, the Settings
-  window, and links Rust through the host FFI static library.
+  composition, the menu bar extra, global hotkey observation, the floating recording
+  HUD, the Voxit control-center window, the Settings window, and links Rust through the
+  host FFI static library.
 - `packages/voxit-core/` holds the shared runtime logic, auth, OpenAI integration, and
   dictation pipeline code. Platform-neutral UI model types and contextual voice
   planning contracts also live here so hosts do not invent divergent state names,

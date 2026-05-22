@@ -84,7 +84,7 @@ impl Default for OpenAiConfig {
 	fn default() -> Self {
 		Self {
 			api_base_url: "https://api.openai.com/v1".to_string(),
-			realtime_model: "gpt-4o-mini-transcribe".to_string(),
+			realtime_model: "gpt-realtime-2".to_string(),
 			finalize_model: "gpt-4o-transcribe".to_string(),
 			rewrite_model: "gpt-5.2-mini".to_string(),
 			language: "en".to_string(),
@@ -98,10 +98,15 @@ impl Default for OpenAiConfig {
 pub struct OpenAiRealtimeConfig {
 	/// Optional noise reduction profile.
 	pub noise_reduction: String,
+	/// Input-audio transcription model used for realtime Pass1 transcript events.
+	pub transcription_model: String,
 }
 impl Default for OpenAiRealtimeConfig {
 	fn default() -> Self {
-		Self { noise_reduction: "near_field".to_string() }
+		Self {
+			noise_reduction: "near_field".to_string(),
+			transcription_model: "gpt-4o-mini-transcribe".to_string(),
+		}
 	}
 }
 
@@ -410,6 +415,13 @@ fn apply_openai_config(
 				config.openai.realtime.noise_reduction = v.to_string();
 			}
 		},
+		([openai_section, realtime_section], "transcription_model")
+			if openai_section == "openai" && realtime_section == "realtime" =>
+		{
+			if let Some(v) = value.str.clone() {
+				config.openai.realtime.transcription_model = v;
+			}
+		},
 		_ => return false,
 	}
 
@@ -535,8 +547,11 @@ fn serialize_toml(config: &Config) -> String {
 	output.push_str(&format!("rewrite_model = \"{}\"\n", config.openai.rewrite_model));
 	output.push_str(&format!("language = \"{}\"\n\n", config.openai.language));
 	output.push_str("[openai.realtime]\n");
-	output
-		.push_str(&format!("noise_reduction = \"{}\"\n\n", config.openai.realtime.noise_reduction));
+	output.push_str(&format!("noise_reduction = \"{}\"\n", config.openai.realtime.noise_reduction));
+	output.push_str(&format!(
+		"transcription_model = \"{}\"\n\n",
+		config.openai.realtime.transcription_model
+	));
 	output.push_str("[rewrite]\n");
 	output.push_str(&format!("enabled = {}\n", config.rewrite.enabled));
 	output.push_str(&format!("auto = {}\n", config.rewrite.auto));
@@ -576,13 +591,14 @@ mode = "hold"
 
 [openai]
 api_base_url = "https://api.openai.com/v1"
-realtime_model = "gpt-4o-mini-transcribe"
+realtime_model = "gpt-realtime-2"
 finalize_model = "gpt-4o-transcribe"
 rewrite_model = "gpt-5.2-mini"
 language = "en"
 
 [openai.realtime]
 noise_reduction = "near_field"
+transcription_model = "gpt-4o-mini-transcribe"
 
 [rewrite]
 enabled = false
@@ -605,6 +621,7 @@ method = "clipboard_cmd_v"
 		assert_eq!(parsed.audio.input_device_name, "USB Mic");
 		assert_eq!(parsed.audio.input_device_id, 123);
 		assert_eq!(parsed.openai.realtime.noise_reduction, "near_field");
+		assert_eq!(parsed.openai.realtime.transcription_model, "gpt-4o-mini-transcribe");
 	}
 
 	#[test]
@@ -617,5 +634,6 @@ method = "clipboard_cmd_v"
 		assert_eq!(parsed.paste.method, "clipboard_cmd_v");
 		assert_eq!(parsed.audio.input_device_id, 0);
 		assert!(parsed.audio.input_device_name.is_empty());
+		assert_eq!(parsed.openai.realtime_model, "gpt-realtime-2");
 	}
 }

@@ -24,7 +24,7 @@ AI dictation App for macOS (MVP scaffold).
 - Pass-2 finalize pass using `gpt-4o-transcribe` for better punctuation and stability.
 - Optional Pass-3 rewrite for cleaner English output with numeric/proper noun protection.
 - Auto-paste into the app that was frontmost when recording began.
-- Configurable behavior and models via `config.toml`.
+- Configurable behavior and models via Settings-backed `config.toml`.
 
 For the normative product contract, constraints, and gaps, see the
 [Runtime Spec](docs/spec/runtime.md).
@@ -37,8 +37,8 @@ V1 target is **macOS-first** and aligned to the English-only voice input design.
 - Scope: ✅ Native macOS mic capture + OpenAI model pipeline only.
 - Limitation: ✅ Linux/Windows build is intentionally disabled.
 - Limitation: ⚠️ Known gaps are documented in the
-  [Runtime Spec](docs/spec/runtime.md) (runtime action wiring, config write-through,
-  CPAL fallback robustness, and rollout cleanup items).
+  [Runtime Spec](docs/spec/runtime.md) (explicit microphone picker, CPAL fallback
+  robustness, app-rule authoring, and rollout cleanup items).
 
 ## Usage
 
@@ -104,13 +104,14 @@ realtime_target_rate_hz = 24000
 
 [openai]
 api_base_url = "https://api.openai.com/v1"
-realtime_model = "gpt-4o-mini-transcribe"
+realtime_model = "gpt-realtime-2"
 finalize_model = "gpt-4o-transcribe"
 rewrite_model = "gpt-5.2-mini"
 language = "en"
 
 [openai.realtime]
 noise_reduction = "near_field" # near_field | far_field | off
+transcription_model = "gpt-4o-mini-transcribe"
 
 [rewrite]
 enabled = true
@@ -130,14 +131,14 @@ First-run onboarding checklist:
 - Microphone permission in **System Settings → Privacy & Security → Microphone**.
 - Accessibility permission in **Privacy & Security → Accessibility** (for Cmd+V fallback).
 - Input Monitoring permission in **Privacy & Security → Input Monitoring** (for global hotkey hooks).
-- Voxit uses request buttons to guide you through the permission prompts in sequence (Microphone → Accessibility → Input Monitoring); grant each permission and re-check when prompted.
+- Voxit Settings includes shortcut buttons for the relevant macOS privacy panes; grant each permission and re-check before a real dictation run.
 - Verify paste flow after permission grant and restart the app if needed.
 
 For the full guided sequence, see [First Run](docs/runbook/first-run.md).
 
 Runtime configuration remains sourced from `config.toml`. The current Swift Settings
-window persists shell preferences in macOS `UserDefaults`; writing those settings back
-through the Rust config path is a tracked runtime gap.
+window persists shell and model preferences in macOS `UserDefaults` and writes
+supported preferences back through the Rust host FFI.
 
 ### Interaction
 
@@ -147,8 +148,10 @@ through the Rust config path is a tracked runtime gap.
 - While listening: panel shows live draft text and committed segments.
 - Stop recording: toggle key again or release key in hold mode.
 - Finalize: Pass-2 runs automatically; rewrite runs by default unless disabled in settings.
-- Microphone input selection is persisted in config as `audio.input_device_id` and `audio.input_device_name`.
-- Refresh workflow: the picker list is refreshed at startup and via the **Refresh microphones** control before choosing from a list of input-capable devices.
+- Model choice: Settings exposes editable OpenAI model IDs for realtime voice,
+  realtime transcript, finalize, and rewrite passes.
+- The Swift Settings audio picker currently exposes the system default microphone; explicit
+  `audio.input_device_id` values can still be resolved by Rust config.
 - Runtime fallback: if a saved explicit device id is unavailable, Voxit falls back to the system default input device and continues recording.
 - Paste behavior: by default paste rewritten text after finalize, or paste raw transcript via available controls.
 - Output target: text is pasted into the app that was frontmost when dictation started.

@@ -93,14 +93,10 @@ State transitions:
 
 ### 4.2 Device picker lifecycle
 
-- On startup, the app refreshes available input-capable devices and caches the result.
-- A manual **Refresh microphones** action is available in the UI to repopulate the
-  picker.
-- Picker values map to:
-  - **System default** (`audio.input_device_id = 0`)
-  - an explicit input device id and name pair from a discovered device list
-- Selection changes persist `audio.input_device_name` and `audio.input_device_id` to
-  config.
+- The current Swift Settings audio picker exposes **System default**
+  (`audio.input_device_id = 0`).
+- Rust can resolve explicit `audio.input_device_id` and `audio.input_device_name` values
+  supplied through config.
 - If a configured device id is invalid or stale when starting recording, the runtime
   falls back to system default and reports fallback in status or logs.
 
@@ -108,10 +104,16 @@ State transitions:
 
 - For each chunk, send `input_audio_buffer.append` payload frames to OpenAI Realtime.
 - Realtime session must be configured with:
+  - `model`: `openai.realtime_model` (default `gpt-realtime-2`)
+  - `reasoning.effort`: the Rust-selected contextual voice plan effort
   - `audio.input.format`: `audio/pcm` with sample rate from config (default `24000`)
-  - `audio.input.noise_reduction`: configured profile (default `near_field`)
-  - `audio.input.transcription.model`: Pass1 model
+  - `audio.input.noise_reduction`: configured profile (default `near_field`) or `null`
+    when set to `off`
+  - `audio.input.transcription.model`: `openai.realtime.transcription_model` (default
+    `gpt-4o-mini-transcribe`)
+  - `audio.input.transcription.language`: `openai.language` (default `en`)
   - `audio.input.turn_detection.type`: `server_vad`
+  - `audio.input.turn_detection.create_response`: `false`
 - Realtime events consumed by the UI:
   - `conversation.item.input_audio_transcription.delta` (draft)
   - `conversation.item.input_audio_transcription.completed` (committed)
@@ -167,8 +169,10 @@ State transitions:
 
 - Hotkey chord handling:
   - supported mode switch: toggle or hold
-  - the menu command uses the configured `hotkey.chord` presentation
-  - system-wide hotkey capture is not active yet
+  - system-wide and app-local key monitors observe the configured `hotkey.chord`
+  - pressing the chord presents the non-activating floating recording HUD and starts
+    dictation without making Voxit the target-app context
+  - toggle mode stops on the next chord press; hold mode stops on hotkey release
 - Menu bar behavior:
   - `MenuBarExtra` exposes `Open Voxit` (`Cmd+O`), `Settings...` (`Cmd+,`),
     `Start Dictation`, `Stop Dictation`, `Refresh Status` (`Cmd+R`), and `Quit Voxit`
@@ -185,15 +189,14 @@ State transitions:
     controls
   - Voxit control-center window: activity, app rules, profiles, glossary, prompt lab,
     and debug/evaluation surfaces
-  - Settings window: app preferences, shortcuts, microphone, permissions, account
-    defaults, privacy, logging, and notifications
-- Onboarding checklist provides request actions for required macOS permissions. The UI
-  prompts permission requests in order:
-  - Microphone: probe-based request and retry loop when denied
-  - Accessibility: system prompt request plus re-check
-  - Input Monitoring: system prompt request plus re-check
-- Grant each permission in macOS Privacy & Security settings when prompted, then
-  re-check in Voxit before continuing.
+  - Settings window: app preferences, shortcuts, model choices, microphone,
+    permissions, account defaults, privacy, logging, and notifications
+- Settings provides shortcut actions for required macOS permission panes:
+  - Microphone
+  - Accessibility
+  - Input Monitoring
+- Grant each permission in macOS Privacy & Security settings, then re-check before
+  continuing to a real dictation run.
 - "Paste raw now" is always available when finalization or rewrite is active and should
   bypass Pass3.
 - The Control Center exposes the current focused context, selected profile, profile
@@ -217,7 +220,7 @@ Supported sections and keys:
   `audio.input_device_id`, `audio.realtime_target_rate_hz`
 - `openai.api_base_url`, `openai.realtime_model`, `openai.finalize_model`,
   `openai.rewrite_model`, `openai.language`
-- `openai.realtime.noise_reduction`
+- `openai.realtime.noise_reduction`, `openai.realtime.transcription_model`
 - `rewrite.enabled`, `rewrite.auto`, `rewrite.guard_numbers`,
   `rewrite.max_output_chars`, `rewrite.style`
 - `paste.lock_frontmost_app`, `paste.method`
@@ -233,7 +236,10 @@ On load:
 Current Swift Settings window:
 
 - persists shell preferences in macOS `UserDefaults`
-- writes supported preferences through the Rust host FFI into `config.toml`
+- exposes editable OpenAI model IDs for realtime voice, realtime transcript, finalize,
+  and rewrite passes
+- writes supported shell and model preferences through the Rust host FFI into
+  `config.toml`
 
 ## 11) CI and Release
 
@@ -253,10 +259,6 @@ Current Swift Settings window:
 
 ## 13) Known Gaps
 
-- System-wide global hotkey capture is not implemented yet; the configured shortcut is
-  currently a Swift menu command.
-- The native HUD does not yet render Pass1 realtime draft/committed transcript events;
-  it shows active profile/state plus raw and final output after Pass2/Pass3.
 - App-rule authoring is not implemented yet; users can refresh focus context and
   manually override the active built-in profile.
 - The Swift Settings audio picker still exposes only System Default even though Rust can

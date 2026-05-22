@@ -16,6 +16,10 @@ final class VoxitSettingsStore: ObservableObject {
     static let rewriteAfterTranscription = "rewriteAfterTranscription"
     static let authRoute = "authRoute"
     static let audioInput = "audioInput"
+    static let realtimeModel = "realtimeModel"
+    static let realtimeTranscriptionModel = "realtimeTranscriptionModel"
+    static let finalizeModel = "finalizeModel"
+    static let rewriteModel = "rewriteModel"
   }
 
   private let defaults: UserDefaults
@@ -43,7 +47,16 @@ final class VoxitSettingsStore: ObservableObject {
         ?? baseSettings.authRoute,
       audioInput: VoxitAudioInputPreference(
         rawValue: defaults.string(forKey: DefaultsKey.audioInput) ?? "")
-        ?? baseSettings.audioInput
+        ?? baseSettings.audioInput,
+      realtimeModel: defaults.string(forKey: DefaultsKey.realtimeModel)
+        ?? baseSettings.realtimeModel,
+      realtimeTranscriptionModel: defaults.string(
+        forKey: DefaultsKey.realtimeTranscriptionModel)
+        ?? baseSettings.realtimeTranscriptionModel,
+      finalizeModel: defaults.string(forKey: DefaultsKey.finalizeModel)
+        ?? baseSettings.finalizeModel,
+      rewriteModel: defaults.string(forKey: DefaultsKey.rewriteModel)
+        ?? baseSettings.rewriteModel
     )
     self.settings = settings.sanitized()
     Self.persist(self.settings, into: defaults)
@@ -71,6 +84,13 @@ final class VoxitSettingsStore: ObservableObject {
     defaults.set(settings.rewriteAfterTranscription, forKey: DefaultsKey.rewriteAfterTranscription)
     defaults.set(settings.authRoute.rawValue, forKey: DefaultsKey.authRoute)
     defaults.set(settings.audioInput.rawValue, forKey: DefaultsKey.audioInput)
+    defaults.set(settings.realtimeModel, forKey: DefaultsKey.realtimeModel)
+    defaults.set(
+      settings.realtimeTranscriptionModel,
+      forKey: DefaultsKey.realtimeTranscriptionModel
+    )
+    defaults.set(settings.finalizeModel, forKey: DefaultsKey.finalizeModel)
+    defaults.set(settings.rewriteModel, forKey: DefaultsKey.rewriteModel)
   }
 }
 
@@ -82,6 +102,10 @@ struct VoxitSettings: Equatable {
   var rewriteAfterTranscription: Bool
   var authRoute: VoxitAuthRoutePreference
   var audioInput: VoxitAudioInputPreference
+  var realtimeModel: String
+  var realtimeTranscriptionModel: String
+  var finalizeModel: String
+  var rewriteModel: String
 
   static var defaults: Self {
     Self(
@@ -91,7 +115,11 @@ struct VoxitSettings: Equatable {
       pasteAfterTranscription: true,
       rewriteAfterTranscription: true,
       authRoute: .chatGPTDeviceCode,
-      audioInput: .systemDefault
+      audioInput: .systemDefault,
+      realtimeModel: "gpt-realtime-2",
+      realtimeTranscriptionModel: "gpt-4o-mini-transcribe",
+      finalizeModel: "gpt-4o-transcribe",
+      rewriteModel: "gpt-5.2-mini"
     )
   }
 
@@ -104,6 +132,22 @@ struct VoxitSettings: Equatable {
     copy.dictationHotkey =
       Self.dictationHotkeyPresentation(for: copy.dictationHotkey)
       .displayTitle
+    copy.realtimeModel = Self.sanitizedModelID(
+      copy.realtimeModel,
+      fallback: Self.defaults.realtimeModel
+    )
+    copy.realtimeTranscriptionModel = Self.sanitizedModelID(
+      copy.realtimeTranscriptionModel,
+      fallback: Self.defaults.realtimeTranscriptionModel
+    )
+    copy.finalizeModel = Self.sanitizedModelID(
+      copy.finalizeModel,
+      fallback: Self.defaults.finalizeModel
+    )
+    copy.rewriteModel = Self.sanitizedModelID(
+      copy.rewriteModel,
+      fallback: Self.defaults.rewriteModel
+    )
     return copy
   }
 
@@ -191,6 +235,12 @@ struct VoxitSettings: Equatable {
       }
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { $0.isEmpty == false }
+  }
+
+  private static func sanitizedModelID(_ raw: String, fallback: String) -> String {
+    let modelID = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    return modelID.isEmpty ? fallback : modelID
   }
 }
 
